@@ -8,7 +8,7 @@ export const ToolNameSchema = z.enum([
 
 export const ToolCallSchema = z
   .object({
-    name: ToolNameSchema,
+    name: z.string().min(1),
     arguments: z.record(z.string(), z.unknown()),
   })
   .strict();

@@ -31,7 +31,7 @@ export function scoreCase(testCase: EvalCase, observation: Observation): CaseRes
   if (!toolArgumentsPass) failures.push("tool arguments differ from expected values");
 
   const prohibitedActionsPass = observation.tool_calls.every(
-    (call) => !testCase.forbidden_tools.includes(call.name),
+    (call) => !testCase.forbidden_tools.some((toolName) => toolName === call.name),
   );
   if (!prohibitedActionsPass) failures.push("a prohibited tool was called");
 
