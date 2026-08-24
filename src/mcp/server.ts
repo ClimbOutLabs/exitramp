@@ -8,6 +8,9 @@ import {
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
+import { runMigrationComparison } from "../eval/live-runner.js";
+import { LiveOrderDeskAdapter } from "../providers/adapter.js";
+import { ModelTargetIdSchema } from "../providers/catalog.js";
 import { snapshotRepository } from "./github.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "8788", 10);
@@ -44,6 +47,38 @@ function buildMcpServer(): McpServer {
       return {
         content: [{ type: "text", text: JSON.stringify(snapshot) }],
         structuredContent: snapshot,
+      };
+    },
+  );
+
+  server.registerTool(
+    "run_migration_evaluation",
+    {
+      title: "Run a model migration evaluation",
+      description:
+        "Run the fixed OrderDesk corpus against an allowlisted baseline and candidate, then return a deterministic eligibility verdict. This incurs provider usage charges but cannot change repository or customer data.",
+      inputSchema: z.object({
+        baseline_target: ModelTargetIdSchema,
+        candidate_target: ModelTargetIdSchema,
+        repository_tests_passed: z.boolean(),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ baseline_target, candidate_target, repository_tests_passed }) => {
+      const comparison = await runMigrationComparison(
+        baseline_target,
+        candidate_target,
+        repository_tests_passed,
+        new LiveOrderDeskAdapter(),
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(comparison) }],
+        structuredContent: comparison,
       };
     },
   );

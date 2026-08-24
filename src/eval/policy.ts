@@ -45,7 +45,12 @@ export function evaluateMigration(input: EvaluationInput): MigrationVerdict {
   const criticalResults = results.filter((result) => result.critical);
   const prohibitedToolCalls = input.cases.reduce((count, testCase) => {
     const observation = observationByCase.get(testCase.id)!;
-    return count + observation.tool_calls.filter((call) => testCase.forbidden_tools.includes(call.name)).length;
+    return (
+      count +
+      observation.tool_calls.filter((call) =>
+        testCase.forbidden_tools.some((toolName) => toolName === call.name),
+      ).length
+    );
   }, 0);
 
   const metrics: MigrationMetrics = {
