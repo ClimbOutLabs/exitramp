@@ -11,11 +11,16 @@ import {
   buildEvaluationPrimaryResponse,
   compileScenarioPlanWithEvidence,
   loadEvaluationEvidenceReferences,
+  loadMigrationEvaluationApproval,
   loadSandboxVerification,
+  prepareMigrationEvaluationApproval,
   persistCompletedMigrationEvaluation,
   persistBaselineRejectedEvaluation,
   persistRepositorySnapshot,
   persistSandboxVerification,
+  renderApprovalMarkdown,
+  renderEvaluationErrorMarkdown,
+  renderEvaluationMarkdown,
 } from "../../src/mcp/server.js";
 import { verifySandboxReceipts, VERIFICATION_COMMAND_PLAN, type SandboxVerificationReceipt } from "../../src/eval/verification.js";
 import type { RepositorySnapshot } from "../../src/mcp/github.js";
@@ -138,7 +143,6 @@ test("approval-card references must exactly match their immutable artifacts", as
       repository.repository_snapshot_evidence_id,
       boundScenarioPlan(snapshot()),
     );
-
     const loaded = await loadEvaluationEvidenceReferences(
       store,
       compiled.scenario_suite,
@@ -185,6 +189,119 @@ test("approval-card references must exactly match their immutable artifacts", as
         { ...verification.verified_build, technical_evidence_id: repository.repository_snapshot_evidence_id },
       ),
       /Sandbox verification evidence has an invalid provenance shape/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("prepares a content-addressed approval manifest with exact workload and provenance parents", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-manifest-"));
+  try {
+    const store = new EvidenceStore({ directory, now: () => new Date("2026-08-25T12:00:00.000Z") });
+    const repository = await persistRepositorySnapshot(store, snapshot());
+    const verification = await persistSandboxVerification(
+      store,
+      repository.repository_snapshot_evidence_id,
+      receipts(),
+    );
+    const compiled = await compileScenarioPlanWithEvidence(
+      store,
+      repository.repository_snapshot_evidence_id,
+      boundScenarioPlan(snapshot()),
+    );
+    const prepared = await prepareMigrationEvaluationApproval(store, {
+      baseline_target: "openai/gpt-5.6-luna",
+      candidate_target: "together/openai/gpt-oss-20b",
+      scenario_suite: compiled.scenario_suite,
+      verified_build: verification.verified_build,
+    });
+    const request = prepared.result.approval_request;
+    const approvalText = renderApprovalMarkdown(request);
+    assert.ok(approvalText.includes("30 baseline trials + conditional 30 candidate trials"));
+    assert.ok(approvalText.includes("60 maximum trials"));
+    assert.ok(approvalText.includes("180 requests"));
+    assert.ok(approvalText.includes("Provider credits"));
+    assert.ok(approvalText.includes("Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox."));
+    assert.ok(approvalText.includes("cannot change repository, customer data, deployment, or migration"));
+    assert.ok(approvalText.includes(request.manifest_evidence_id));
+    assert.ok(approvalText.length < 20_000);
+    assert.equal(/observations|attempts|internal_report_digest/.test(approvalText), false);
+    assert.match(request.manifest_evidence_id, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(prepared.envelope.artifact_type, "migration-evaluation-approval");
+    assert.deepEqual(prepared.envelope.parent_ids, [
+      compiled.compiled_scenario_evidence_id,
+      verification.verification_evidence_id,
+    ]);
+    assert.deepEqual(request.manifest.workload, {
+      cases: 10,
+      trials_per_case: 3,
+      baseline_trials: 30,
+      candidate_trials_if_baseline_passes: 30,
+      maximum_trials: 60,
+      maximum_provider_requests: 180,
+    });
+    assert.equal(request.manifest.baseline_target.display_name, "OpenAI GPT-5.6 Luna");
+    assert.equal(request.manifest.candidate_target.display_name, "Together AI GPT-OSS 20B");
+    assert.match(request.manifest.approval_boundary, /TrueForge supplies the actual human approval boundary/);
+    const loaded = await loadMigrationEvaluationApproval(store, request);
+    assert.equal(loaded.manifest.commit_sha, COMMIT);
+    assert.equal(loaded.evidence.frozen.envelope.evidence_id, compiled.compiled_scenario_evidence_id);
+
+    await assert.rejects(
+      loadMigrationEvaluationApproval(store, {
+        ...request,
+        manifest: {
+          ...request.manifest,
+          candidate_target: { ...request.manifest.candidate_target, display_name: "Forged target" },
+        },
+      }),
+      /does not match immutable evidence/,
+    );
+    await assert.rejects(
+      loadMigrationEvaluationApproval(store, {
+        ...request,
+        manifest_evidence_id: verification.verification_evidence_id,
+      }),
+      /invalid parent links/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("approval preparation rejects an unverified build and same model targets", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-reject-"));
+  try {
+    const store = new EvidenceStore({ directory });
+    const repository = await persistRepositorySnapshot(store, snapshot());
+    const compiled = await compileScenarioPlanWithEvidence(
+      store,
+      repository.repository_snapshot_evidence_id,
+      boundScenarioPlan(snapshot()),
+    );
+    const rejectedVerification = await persistSandboxVerification(
+      store,
+      repository.repository_snapshot_evidence_id,
+      receipts("other-commit"),
+    );
+    await assert.rejects(
+      prepareMigrationEvaluationApproval(store, {
+        baseline_target: "openai/gpt-5.6-luna",
+        candidate_target: "openai/gpt-5.6-luna",
+        scenario_suite: compiled.scenario_suite,
+        verified_build: rejectedVerification.verified_build,
+      }),
+      /Baseline and candidate must differ/,
+    );
+    await assert.rejects(
+      prepareMigrationEvaluationApproval(store, {
+        baseline_target: "openai/gpt-5.6-luna",
+        candidate_target: "together/openai/gpt-oss-20b",
+        scenario_suite: compiled.scenario_suite,
+        verified_build: rejectedVerification.verified_build,
+      }),
+      /sandbox verification must pass/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -264,6 +381,12 @@ test("persists a human-readable terminal baseline rejection without running the 
       repository.repository_snapshot_evidence_id,
       boundScenarioPlan(snapshot()),
     );
+    const approval = await prepareMigrationEvaluationApproval(store, {
+      baseline_target: "openai/gpt-5.6-luna",
+      candidate_target: "together/openai/gpt-oss-20b",
+      scenario_suite: compiled.scenario_suite,
+      verified_build: verification.verified_build,
+    });
     let candidateCalls = 0;
     let baselineCalls = 0;
     const invoker: OrderDeskInvoker = {
@@ -300,6 +423,7 @@ test("persists a human-readable terminal baseline rejection without running the 
     assert.equal(candidateCalls, 0);
 
     const terminal = await persistBaselineRejectedEvaluation(store, {
+      approval_manifest_evidence_id: approval.result.approval_request.manifest_evidence_id,
       scenario_evidence_id: compiled.compiled_scenario_evidence_id,
       verification_evidence_id: verification.verification_evidence_id,
       scenario_set_id: compiled.scenario_set_id,
@@ -312,6 +436,7 @@ test("persists a human-readable terminal baseline rejection without running the 
     });
     assert.equal(terminal.envelope.artifact_type, "baseline-rejected-evaluation");
     assert.deepEqual(terminal.envelope.parent_ids, [
+      approval.result.approval_request.manifest_evidence_id,
       compiled.compiled_scenario_evidence_id,
       verification.verification_evidence_id,
     ]);
@@ -336,6 +461,10 @@ test("persists a human-readable terminal baseline rejection without running the 
     assert.match(terminal.payload.human_report.next_step, /No comparison or migration was performed/);
     assert.equal("evaluation_envelope_id" in terminal.payload.human_report, false);
     assert.equal(terminal.payload.raw_details.internal_report_digest, failure.internal_report_digest);
+    assert.equal(
+      terminal.payload.raw_details.approval_manifest_evidence_id,
+      approval.result.approval_request.manifest_evidence_id,
+    );
     assert.equal(
       terminal.payload.raw_details.baseline_preflight.baseline.evaluation_profile.profile_version,
       "openai-gpt-5.6-responses-v1",
@@ -365,6 +494,15 @@ test("persists a human-readable terminal baseline rejection without running the 
       terminal.payload.human_report,
       terminal.envelope.evidence_id,
     );
+    const baselineText = renderEvaluationMarkdown(primary);
+    assert.match(baselineText, /^## Migration evaluation:/);
+    assert.match(baselineText, /Baseline .*: 29\/30 passed; hard contract failed/);
+    assert.match(baselineText, /Candidate .*: skipped/);
+    assert.ok(baselineText.includes("Estimated cost"));
+    assert.ok(baselineText.includes(terminal.envelope.evidence_id));
+    assert.ok(baselineText.includes("immutable evaluation evidence only"));
+    assert.ok(baselineText.length < 20_000);
+    assert.equal(/observations|attempts|internal_report_digest/.test(baselineText), false);
     assert.equal(primary.technical_details.evaluation_envelope_id, terminal.envelope.evidence_id);
     assert.equal("internal_report_digest" in primary.technical_details, false);
     assertBoundedPrimaryOutput(primary);
@@ -388,6 +526,12 @@ test("returns a bounded completed report while immutable evidence retains the ra
       repository.repository_snapshot_evidence_id,
       boundScenarioPlan(snapshot()),
     );
+    const approval = await prepareMigrationEvaluationApproval(store, {
+      baseline_target: "openai/gpt-5.6-luna",
+      candidate_target: "together/openai/gpt-oss-20b",
+      scenario_suite: compiled.scenario_suite,
+      verified_build: verification.verified_build,
+    });
     const invoker: OrderDeskInvoker = {
       async invokeCase(_target, testCase) {
         return passingObservation(testCase);
@@ -404,6 +548,7 @@ test("returns a bounded completed report while immutable evidence retains the ra
     if (comparison.kind !== "completed") throw new Error("Expected a completed comparison");
 
     const persisted = await persistCompletedMigrationEvaluation(store, {
+      approval_manifest_evidence_id: approval.result.approval_request.manifest_evidence_id,
       scenario_evidence_id: compiled.compiled_scenario_evidence_id,
       verification_evidence_id: verification.verification_evidence_id,
       scenario_set_id: compiled.scenario_set_id,
@@ -416,6 +561,7 @@ test("returns a bounded completed report while immutable evidence retains the ra
     });
     assert.equal(persisted.envelope.artifact_type, "migration-evaluation");
     assert.deepEqual(persisted.envelope.parent_ids, [
+      approval.result.approval_request.manifest_evidence_id,
       compiled.compiled_scenario_evidence_id,
       verification.verification_evidence_id,
     ]);
@@ -434,6 +580,10 @@ test("returns a bounded completed report while immutable evidence retains the ra
     assert.equal("evaluation_envelope_id" in persisted.payload.human_report, false);
     assert.equal(persisted.payload.raw_details.internal_report_digest, comparison.verdict.evidence_id);
     assert.equal(
+      persisted.payload.raw_details.approval_manifest_evidence_id,
+      approval.result.approval_request.manifest_evidence_id,
+    );
+    assert.equal(
       persisted.payload.raw_details.comparison.baseline.evaluation_profile.profile_version,
       "openai-gpt-5.6-responses-v1",
     );
@@ -450,6 +600,18 @@ test("returns a bounded completed report while immutable evidence retains the ra
       persisted.payload.human_report,
       persisted.envelope.evidence_id,
     );
+    const completedText = renderEvaluationMarkdown(primary);
+    assert.match(completedText, /^## Migration evaluation:/);
+    assert.match(completedText, /Baseline .*: 30\/30 passed; hard contract passed/);
+    assert.match(completedText, /Candidate .*: 30\/30 passed; hard contract passed/);
+    assert.ok(completedText.includes("Candidate critical-tool behavior: 100.0%"));
+    assert.ok(completedText.includes("Candidate typed grounding: 100.0%"));
+    assert.ok(completedText.includes("Candidate prohibited tool calls: 0"));
+    assert.ok(completedText.includes("Estimated cost"));
+    assert.ok(completedText.includes(persisted.envelope.evidence_id));
+    assert.ok(completedText.includes("immutable evaluation evidence only"));
+    assert.ok(completedText.length < 20_000);
+    assert.equal(/observations|attempts|internal_report_digest/.test(completedText), false);
     assert.equal(primary.status, "completed");
     assert.equal(primary.technical_details.evaluation_envelope_id, persisted.envelope.evidence_id);
     assertBoundedPrimaryOutput(primary);
@@ -490,6 +652,16 @@ test("requires detailed receipts and removes raw commit/receipt input from evalu
     ...valid,
     verification_receipts: valid.verification_receipts.map(({ stdout_sha256: _stdout, ...receipt }) => receipt),
   }).success, false);
+});
+
+test("provider-error text is traceable without exposing raw provider details", () => {
+  const evidenceId = `sha256:${"e".repeat(64)}`;
+  const text = renderEvaluationErrorMarkdown(evidenceId);
+  assert.match(text, /^## Paid OrderDesk comparison failed/);
+  assert.ok(text.includes(evidenceId));
+  assert.match(text, /No migration, repository, customer-data, or deployment mutation occurred/);
+  assert.ok(text.length < 2_000);
+  assert.equal(/observations|attempts|internal_report_digest|provider message|provider failure details/i.test(text), false);
 });
 
 test("the structural verifier does not claim a native sandbox attestation", () => {

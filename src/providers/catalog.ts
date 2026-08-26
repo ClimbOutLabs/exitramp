@@ -51,6 +51,8 @@ export type EvaluationRunProfile = OpenAIResponsesSettings | TogetherGptOssChatS
 
 export interface ModelTarget {
   id: ModelTargetId;
+  /** Stable, server-owned label shown on approval cards and reports. */
+  display_name: string;
   provider: "openai" | "together";
   model: string;
   api_key_env: "OPENAI_API_KEY" | "TOGETHER_API_KEY";
@@ -64,6 +66,7 @@ export interface ModelTarget {
 export const MODEL_TARGETS: Record<ModelTargetId, ModelTarget> = {
   "openai/gpt-5.6-luna": {
     id: "openai/gpt-5.6-luna",
+    display_name: "OpenAI GPT-5.6 Luna",
     provider: "openai",
     model: "gpt-5.6-luna",
     api_key_env: "OPENAI_API_KEY",
@@ -75,6 +78,7 @@ export const MODEL_TARGETS: Record<ModelTargetId, ModelTarget> = {
   },
   "together/openai/gpt-oss-20b": {
     id: "together/openai/gpt-oss-20b",
+    display_name: "Together AI GPT-OSS 20B",
     provider: "together",
     model: "openai/gpt-oss-20b",
     api_key_env: "TOGETHER_API_KEY",
@@ -86,6 +90,7 @@ export const MODEL_TARGETS: Record<ModelTargetId, ModelTarget> = {
   },
   "together/openai/gpt-oss-120b": {
     id: "together/openai/gpt-oss-120b",
+    display_name: "Together AI GPT-OSS 120B",
     provider: "together",
     model: "openai/gpt-oss-120b",
     api_key_env: "TOGETHER_API_KEY",
