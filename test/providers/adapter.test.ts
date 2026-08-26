@@ -68,9 +68,9 @@ test("runs a Together tool round and records measured usage", async () => {
           index: 0,
           finish_reason: "stop",
           message: {
-            role: "assistant",
-            content:
-              '{"intent":"order_status","order_id":"ORD-1001","action":"lookup","urgency":"normal","reply":"Order ORD-1001 is in transit."}',
+              role: "assistant",
+              content:
+                '{"intent":"order_status","order_id":"ORD-1001","subscription_id":null,"action":"lookup","urgency":"normal","reply":"Order ORD-1001 is in transit.","response":{"kind":"order_status","status":"in_transit"}}',
           },
         },
       ],
@@ -89,6 +89,13 @@ test("runs a Together tool round and records measured usage", async () => {
 
   assert.deepEqual(observation.tool_calls, [
     { name: "lookup_order", arguments: { order_id: "ORD-1001" } },
+  ]);
+  assert.deepEqual(observation.tool_results, [
+    {
+      name: "lookup_order",
+      arguments: { order_id: "ORD-1001" },
+      result: { order_id: "ORD-1001", status: "in transit" },
+    },
   ]);
   assert.equal(observation.input_tokens, 18);
   assert.equal(observation.output_tokens, 15);
@@ -125,7 +132,7 @@ test("parses an OpenAI Responses structured decision", async () => {
               type: "output_text",
               annotations: [],
               logprobs: [],
-              text: '{"intent":"general","order_id":null,"action":"answer","urgency":"low","reply":"Our business hours are Monday through Friday."}',
+              text: '{"intent":"general","order_id":null,"subscription_id":null,"action":"answer","urgency":"low","reply":"Our business hours are Monday through Friday.","response":{"kind":"support_hours","schedule":"weekday_9_to_5"}}',
             },
           ],
         },

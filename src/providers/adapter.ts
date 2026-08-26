@@ -7,7 +7,7 @@ import type {
 } from "openai/resources/chat/completions";
 import type { ResponseFunctionToolCall } from "openai/resources/responses/responses";
 
-import type { EvalCase, Observation, ToolCall } from "../domain/schemas.js";
+import type { EvalCase, Observation, ToolCall, ToolResult } from "../domain/schemas.js";
 import { calculateCost, getModelTarget, type ModelTargetId } from "./catalog.js";
 import {
   executeOrderDeskTool,
@@ -91,6 +91,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
     const target = getModelTarget(targetId);
     const startedAt = performance.now();
     const toolCalls: ToolCall[] = [];
+    const toolResults: ToolResult[] = [];
     let inputTokens = 0;
     let outputTokens = 0;
     let response = await client.responses.create({
@@ -126,11 +127,17 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
 
       const outputs = calls.map((call) => {
         const observed = { name: call.name, arguments: parseArguments(call.arguments) };
+        const result = executeOrderDeskTool(observed);
         toolCalls.push(observed);
+        toolResults.push({
+          name: observed.name as ToolResult["name"],
+          arguments: observed.arguments,
+          result,
+        });
         return {
           type: "function_call_output" as const,
           call_id: call.call_id,
-          output: JSON.stringify(executeOrderDeskTool(observed)),
+          output: JSON.stringify(result),
         };
       });
       const priorItems = response.output.filter(
@@ -165,6 +172,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
       case_id: testCase.id,
       decision: parseDecision(response.output_text),
       tool_calls: toolCalls,
+      tool_results: toolResults,
       latency_ms: performance.now() - startedAt,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
@@ -180,6 +188,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
     const target = getModelTarget(targetId);
     const startedAt = performance.now();
     const toolCalls: ToolCall[] = [];
+    const toolResults: ToolResult[] = [];
     const messages: ChatCompletionMessageParam[] = [
       { role: "system", content: ORDERDESK_INSTRUCTIONS },
       { role: "user", content: testCase.prompt },
@@ -232,11 +241,17 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
           name: call.function.name,
           arguments: parseArguments(call.function.arguments),
         };
+        const result = executeOrderDeskTool(observed);
         toolCalls.push(observed);
+        toolResults.push({
+          name: observed.name as ToolResult["name"],
+          arguments: observed.arguments,
+          result,
+        });
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: JSON.stringify(executeOrderDeskTool(observed)),
+          content: JSON.stringify(result),
         });
       }
     }
@@ -245,6 +260,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
       case_id: testCase.id,
       decision: parseDecision(finalContent),
       tool_calls: toolCalls,
+      tool_results: toolResults,
       latency_ms: performance.now() - startedAt,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
