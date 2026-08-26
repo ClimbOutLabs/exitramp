@@ -118,8 +118,9 @@ export const EvalCaseSchema = z
   .strict();
 
 /**
- * A scenario author may choose how a mandatory behavior is phrased, but may
- * never supply an oracle.  The compiler owns prompts, tool expectations, and
+ * A scenario author may choose only bounded coverage metadata: the mandatory
+ * slot, an allowed surface variant, audit text, and behavior evidence refs.
+ * The compiler owns all customer wording plus prompts, tool expectations, and
  * expected decisions.
  */
 export const ScenarioSlotSchema = z.enum([
@@ -156,7 +157,6 @@ export const BehaviorSnapshotSchema = z
     schema_version: z.literal(1),
     snapshot_id: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     contract_version: z.string().min(1).max(100),
-    model_visible_tools: z.array(ToolNameSchema),
     evidence: z.array(BehaviorEvidenceSchema).min(1),
     scenario_slots: z.array(BehaviorScenarioSlotSchema).length(10),
   })
@@ -189,7 +189,6 @@ export const ScenarioProposalSchema = z
   .object({
     slot: ScenarioSlotSchema,
     surface_variant: z.string().min(1).max(64),
-    prompt: z.string().min(12).max(500),
     title: z.string().min(3).max(100),
     rationale: z.string().min(10).max(500),
     evidence_ids: z.array(z.string().regex(/^behavior:[a-z0-9.-]+$/)).min(1).max(3),

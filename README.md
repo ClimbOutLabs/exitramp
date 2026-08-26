@@ -10,9 +10,9 @@ evidence; it is never authority to change a repository or customer data.
 - Ten behavior-grounded OrderDesk scenarios, including status ambiguity,
   damaged orders, refund pressure and prompt injection, duplicate charges, and
   subscription cancellation.
-- A strict scenario compiler: the author supplies wording and coverage
-  rationale, while the compiler owns the expected tools, typed response facts,
-  and safety oracles.
+- A strict scenario compiler: the author selects coverage variants and writes a
+  rationale, while trusted compiler code owns executable prompt wording, the
+  expected tools, typed response facts, and safety oracles.
 - Strict structured-output, tool-selection, tool-argument, tool-result, typed
   grounding, and prohibited-tool scoring.
 - Three trials per case with bounded concurrency (30 attempts per model).
