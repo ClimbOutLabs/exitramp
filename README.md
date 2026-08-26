@@ -67,8 +67,11 @@ The intended current workflow is:
 2. Call `inspect_orderdesk_behavior`.
 3. Submit the author’s ten-proposal plan to
    `compile_orderdesk_scenario_plan`; retain the returned compiled evidence ID.
-4. Call `run_migration_evaluation` with two allowlisted model targets, that
-   compiled evidence ID, a verified sandbox evidence ID, and its receipts.
+4. Call `record_sandbox_verification` with the repository snapshot evidence ID
+   and the native sandbox receipts; retain the returned verification evidence ID.
+5. Call `run_migration_evaluation` with two allowlisted model targets, the
+   compiled scenario evidence ID, and the verification evidence ID. It accepts
+   evidence IDs, not raw receipts.
 
 Live evaluation requires `OPENAI_API_KEY` for the OpenAI target and/or
 `TOGETHER_API_KEY` for Together targets. It evaluates 10 cases × 3 trials for
