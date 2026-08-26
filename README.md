@@ -15,6 +15,8 @@ evidence; it is never authority to change a repository or customer data.
   expected tools, typed response facts, and safety oracles.
 - Strict structured-output, tool-selection, tool-argument, tool-result, typed
   grounding, and prohibited-tool scoring.
+- Facts-only model decisions and a deterministic customer-reply renderer that
+  runs only after the exact typed tool-result proof is present.
 - Three trials per case with bounded concurrency (30 attempts per model).
 - Content-addressed evidence envelopes with tamper detection.
 - OpenAI-compatible live adapters for the allowlisted catalog in
@@ -61,23 +63,49 @@ MCP endpoint: `http://127.0.0.1:8788/mcp`
 
 The intended current workflow is:
 
+Run the MCP server from a clean checkout of the same repository commit that
+`repo_snapshot` resolves; source mismatches are rejected before compilation.
+
 1. Call `repo_snapshot` to resolve a GitHub ref to a commit and receive a
    bounded file manifest. Set `GITHUB_TOKEN` for private repositories or higher
    API limits.
-2. Call `inspect_orderdesk_behavior`.
-3. Submit the author’s ten-proposal plan to
-   `compile_orderdesk_scenario_plan`; retain the returned compiled evidence ID.
+2. Call `inspect_orderdesk_behavior` with the `repository_snapshot_evidence_id`
+   returned by step 1. The returned behavior snapshot includes the resolved
+   repository commit and exact Git blob IDs for the four authoritative
+   OrderDesk source files; incomplete, truncated, or locally mismatched source
+   manifests fail closed.
+3. Submit `{ repository_snapshot_evidence_id, plan }` to
+   `compile_orderdesk_scenario_plan`. The repository reference comes from step
+   1; the model authors only the ten-proposal `plan`. The compiler binds the
+   behavior snapshot, plan, and frozen suite to that exact resolved commit.
+   Retain its returned `scenario_suite` reference (for example, the **OrderDesk
+   adversarial safety suite**), including its human-readable label, case count,
+   and technical ID.
 4. Call `record_sandbox_verification` with the repository snapshot evidence ID
-   and the native sandbox receipts; retain the returned verification evidence ID.
-5. Call `run_migration_evaluation` with two allowlisted model targets, the
-   compiled scenario evidence ID, and the verification evidence ID. It accepts
-   evidence IDs, not raw receipts.
+   and the sandbox receipts; retain its returned `verified_build`
+   reference (for example, a **Receipt-verified build**), including its displayed
+   commit, structural-verification scope, and verification status.
+5. Call `run_migration_evaluation` with two allowlisted model targets,
+   `scenario_suite`, and `verified_build`. The approval card shows their
+   readable context and SHA-256 technical IDs; the server re-derives and checks
+   every displayed field from immutable evidence and requires the suite and
+   verified build to resolve to the exact same repository snapshot and commit
+   before a provider request. The baseline runs first; if it fails the hard
+   behavior contract, the candidate is skipped. The result is a compact
+   `judge-report-v1` with model IDs, trial and
+   pass counts, behavioral rates, latency, estimated measured-usage cost, failed
+   gates, and a safe next step. Full attempts, observations, and case traces
+   remain only in the immutable evaluation envelope.
 
 Live evaluation requires `OPENAI_API_KEY` for the OpenAI target and/or
-`TOGETHER_API_KEY` for Together targets. It evaluates 10 cases × 3 trials for
-both baseline and candidate: 60 model attempts before provider retries or
-additional tool rounds. This can take longer than three minutes and incurs
-provider charges; the adapter reports measured token usage and estimated cost.
+`TOGETHER_API_KEY` for Together targets. It runs 30 baseline trials, then up to
+30 candidate trials: 30 total model attempts on baseline rejection and 60 on a
+completed comparison, before additional tool rounds. SDK retries are disabled,
+so a failed provider request fails the evaluation instead of adding a hidden
+paid attempt. A
+baseline rejection incurs only the baseline's measured usage and estimated
+cost; a completed comparison reports the combined measured usage and estimated
+cost. This can take longer than three minutes.
 
 ## Safety limits of this repository
 
@@ -85,7 +113,16 @@ provider charges; the adapter reports measured token usage and estimated cost.
   called by a passing candidate.
 - The receipt verifier checks the fixed command plan, commit labels, exit
   codes, timeouts, sandbox identity, and output-hash fields, but does not create
-  a sandbox or execute commands itself.
+  a sandbox, execute commands, or cryptographically attest the receipt source.
+  A Daytona-looking sandbox ID is described only as Daytona-labeled receipt
+  evidence, never as proof that ExitRamp ran Daytona.
+- OrderDesk behavior is a versioned, trusted built-in contract—not a generic
+  source-code semantic extractor. The compiler records its behavior-snapshot,
+  contract, and compiler versions and binds the resulting suite to the
+  repository snapshot. The behavior snapshot also records exact Git blob IDs
+  for its four authoritative source files and refuses truncated, missing, or
+  locally mismatched source manifests, so a behavior suite cannot be mixed
+  with another build.
 - Evidence is persisted by the MCP server under `.exitramp/evidence`; the
   local demo only prints its result and does not create evidence files.
 - There is no `apply_migration` capability or source mutation path here. This

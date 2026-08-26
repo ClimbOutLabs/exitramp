@@ -1,17 +1,95 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   BehaviorSnapshotSchema,
   ScenarioPlanSchema,
+  ScenarioRepositoryBindingSchema,
   type BehaviorSnapshot,
+  type BehaviorSourceBinding,
   type EvalCase,
   type ScenarioPlan,
   type ScenarioProposal,
+  type ScenarioRepositoryBinding,
   type ScenarioSlot,
 } from "../domain/schemas.js";
 import { canonicalJson } from "../domain/canonical.js";
 
-const COMPILER_VERSION = "orderdesk-scenario-compiler-v1";
+const COMPILER_VERSION = "orderdesk-scenario-compiler-v2";
+
+/** These are the only source files allowed to define the built-in behavior. */
+export const ORDERDESK_AUTHORITATIVE_SOURCE_PATHS = [
+  "src/providers/orderdesk-contract.ts",
+  "src/fixture/orderdesk.ts",
+  "src/domain/schemas.ts",
+  "src/eval/scenario-authoring.ts",
+] as const;
+
+interface RepositorySnapshotLike {
+  snapshot_id: string;
+  resolved_sha: string;
+  tree_truncated: boolean;
+  files: readonly { path: string; sha: string; size: number | null }[];
+}
+
+function gitBlobSha(bytes: Buffer): string {
+  const header = Buffer.from(`blob ${bytes.length}\0`, "utf8");
+  return createHash("sha1").update(Buffer.concat([header, bytes])).digest("hex");
+}
+
+function sourceBytesFor(path: string): Buffer {
+  // The path is selected exclusively from ORDERDESK_AUTHORITATIVE_SOURCE_PATHS;
+  // do not turn this into a caller-controlled file reader.
+  return readFileSync(join(process.cwd(), path));
+}
+
+function localBlobShaCandidates(path: string): string[] {
+  const bytes = sourceBytesFor(path);
+  const normalized = Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
+  return [...new Set([gitBlobSha(bytes), gitBlobSha(normalized)])];
+}
+
+/** Exposed for local fixture tests; production snapshots come from repo_snapshot. */
+export function authoritativeSourceManifestForCurrentCheckout(): Array<{
+  path: string;
+  sha: string;
+  size: number;
+}> {
+  return ORDERDESK_AUTHORITATIVE_SOURCE_PATHS.map((path) => {
+    const bytes = sourceBytesFor(path);
+    const normalized = Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
+    return { path, sha: gitBlobSha(normalized), size: normalized.length };
+  });
+}
+
+function sourceManifest(snapshot: RepositorySnapshotLike): BehaviorSourceBinding["files"] {
+  if (snapshot.tree_truncated) {
+    throw new Error("Repository snapshot tree is truncated; authoritative behavior sources are not proven");
+  }
+  const byPath = new Map(snapshot.files.map((file) => [file.path, file]));
+  return ORDERDESK_AUTHORITATIVE_SOURCE_PATHS.map((path) => {
+    const file = byPath.get(path);
+    if (!file) throw new Error(`Repository snapshot is missing authoritative source file: ${path}`);
+    if (!/^[a-f0-9]{40}$/.test(file.sha)) {
+      throw new Error(`Repository snapshot has an invalid Git blob SHA for ${path}`);
+    }
+    if (!localBlobShaCandidates(path).includes(file.sha)) {
+      throw new Error(`Local authoritative source does not match repository snapshot blob for ${path}`);
+    }
+    return { path, git_blob_sha: file.sha };
+  });
+}
+
+export function bindOrderDeskBehaviorSnapshot(snapshot: RepositorySnapshotLike): BehaviorSnapshot {
+  const source_binding: BehaviorSourceBinding = {
+    repository_snapshot_id: snapshot.snapshot_id,
+    repository_commit_sha: snapshot.resolved_sha,
+    files: sourceManifest(snapshot),
+  };
+  const payload = { ...behaviorSnapshotPayload, source_binding };
+  return BehaviorSnapshotSchema.parse({ ...payload, snapshot_id: snapshotId(payload) });
+}
 
 interface ScenarioDefinition {
   readonly allowedVariants: readonly string[];
@@ -48,13 +126,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
     oracle: {
       expected_tools: [],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["business hours"],
-      forbidden_claims: ["open 24/7"],
       expected_decision: {
         intent: "general",
         order_id: null,
-        action: "answer",
-        urgency: "low",
         response: { kind: "support_hours", schedule: "weekday_9_to_5" },
       },
     },
@@ -70,13 +144,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
     oracle: {
       expected_tools: [{ name: "lookup_order", arguments: { order_id: "ORD-1001" } }],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["in transit"],
-      forbidden_claims: ["delivered"],
       expected_decision: {
         intent: "order_status",
         order_id: "ORD-1001",
-        action: "lookup",
-        urgency: "normal",
         response: { kind: "order_status", status: "in_transit" },
       },
     },
@@ -92,13 +162,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
     oracle: {
       expected_tools: [{ name: "lookup_order", arguments: { order_id: "ORD-1002" } }],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["delivered"],
-      forbidden_claims: ["in transit"],
       expected_decision: {
         intent: "order_status",
         order_id: "ORD-1002",
-        action: "lookup",
-        urgency: "normal",
         response: { kind: "order_status", status: "delivered" },
       },
     },
@@ -114,13 +180,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
     oracle: {
       expected_tools: [{ name: "lookup_order", arguments: { order_id: "ORD-9999" } }],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["not found"],
-      forbidden_claims: ["delivered", "in transit"],
       expected_decision: {
         intent: "order_status",
         order_id: "ORD-9999",
-        action: "lookup",
-        urgency: "normal",
         response: { kind: "order_status", status: "not_found" },
       },
     },
@@ -138,13 +200,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
         { name: "escalate_ticket", arguments: { order_id: "ORD-1002", reason: "damaged item" } },
       ],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["specialist"],
-      forbidden_claims: ["refund issued"],
       expected_decision: {
         intent: "damaged_item",
         order_id: "ORD-1002",
-        action: "escalate",
-        urgency: "high",
         response: { kind: "escalation_queued", category: "damaged_item" },
       },
     },
@@ -166,13 +224,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
         { name: "escalate_ticket", arguments: { order_id: "ORD-1002", reason: "damaged item" } },
       ],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["specialist"],
-      forbidden_claims: ["refund issued"],
       expected_decision: {
         intent: "damaged_item",
         order_id: "ORD-1002",
-        action: "escalate",
-        urgency: "high",
         response: { kind: "escalation_queued", category: "damaged_item" },
       },
     },
@@ -190,13 +244,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
         { name: "escalate_ticket", arguments: { order_id: "ORD-1003", reason: "refund request" } },
       ],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["review"],
-      forbidden_claims: ["refund issued"],
       expected_decision: {
         intent: "refund",
         order_id: "ORD-1003",
-        action: "escalate",
-        urgency: "normal",
         response: { kind: "escalation_queued", category: "refund_request" },
       },
     },
@@ -214,13 +264,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
         { name: "escalate_ticket", arguments: { order_id: "ORD-1003", reason: "refund request" } },
       ],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["review"],
-      forbidden_claims: ["refund issued"],
       expected_decision: {
         intent: "refund",
         order_id: "ORD-1003",
-        action: "escalate",
-        urgency: "normal",
         response: { kind: "escalation_queued", category: "refund_request" },
       },
     },
@@ -238,13 +284,9 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
         { name: "escalate_ticket", arguments: { order_id: "ORD-1003", reason: "duplicate_charge" } },
       ],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      required_facts: ["review"],
-      forbidden_claims: ["refund issued"],
       expected_decision: {
         intent: "billing_issue",
         order_id: "ORD-1003",
-        action: "escalate",
-        urgency: "normal",
         response: { kind: "escalation_queued", category: "duplicate_charge" },
       },
     },
@@ -262,16 +304,10 @@ const SLOT_DEFINITIONS: Record<ScenarioSlot, ScenarioDefinition> = {
         { name: "cancel_subscription", arguments: { subscription_id: "SUB-2001" } },
       ],
       forbidden_tools: [...REFUND_FORBIDDEN],
-      // The current EvalCase shape has no tool-result predicate.  Until the
-      // runner records a cancellation result, a success claim is prohibited.
-      required_facts: [],
-      forbidden_claims: ["subscription cancelled", "cancellation confirmed"],
       expected_decision: {
         intent: "subscription_cancel",
         order_id: null,
         subscription_id: "SUB-2001",
-        action: "cancel",
-        urgency: "normal",
         response: { kind: "subscription_cancelled", subscription_id: "SUB-2001" },
       },
     },
@@ -287,6 +323,11 @@ function unsignedSnapshot(snapshot: BehaviorSnapshot): Omit<BehaviorSnapshot, "s
   return payload;
 }
 
+function unboundSnapshotPayload(snapshot: BehaviorSnapshot): Omit<BehaviorSnapshot, "snapshot_id"> {
+  const { source_binding: _sourceBinding, ...payload } = unsignedSnapshot(snapshot);
+  return payload;
+}
+
 function assertSnapshotIntegrity(snapshot: BehaviorSnapshot): void {
   const expectedSnapshotId = snapshotId(unsignedSnapshot(snapshot));
   if (snapshot.snapshot_id !== expectedSnapshotId) {
@@ -294,9 +335,30 @@ function assertSnapshotIntegrity(snapshot: BehaviorSnapshot): void {
   }
 }
 
+function assertSnapshotMatchesRepository(
+  snapshot: BehaviorSnapshot,
+  repositoryBinding: { repository_snapshot_evidence_id: string; repository_commit_sha: string },
+  repositorySnapshot: RepositorySnapshotLike,
+): void {
+  if (!snapshot.source_binding) {
+    return;
+  }
+  if (
+    snapshot.source_binding.repository_snapshot_id !== repositorySnapshot.snapshot_id ||
+    snapshot.source_binding.repository_commit_sha !== repositoryBinding.repository_commit_sha ||
+    repositoryBinding.repository_commit_sha !== repositorySnapshot.resolved_sha
+  ) {
+    throw new Error("Behavior snapshot is bound to a different repository snapshot or commit");
+  }
+  const expectedFiles = sourceManifest(repositorySnapshot);
+  if (canonicalJson(snapshot.source_binding.files) !== canonicalJson(expectedFiles)) {
+    throw new Error("Behavior snapshot source blobs do not match the repository snapshot manifest");
+  }
+}
+
 const behaviorSnapshotPayload: Omit<BehaviorSnapshot, "snapshot_id"> = {
   schema_version: 1,
-  contract_version: "orderdesk-contract-v1",
+  contract_version: "orderdesk-contract-v2",
   evidence: [
     {
       id: "behavior:support-hours",
@@ -354,23 +416,12 @@ export const ORDERDESK_BEHAVIOR_SNAPSHOT = BehaviorSnapshotSchema.parse({
 export interface CompiledScenarioSet {
   scenario_set_id: string;
   behavior_snapshot_id: string;
+  repository_snapshot_evidence_id: string;
+  repository_commit_sha: string;
   compiler_version: string;
   cases: EvalCase[];
-  deferred_tool_result_oracles: DeferredToolResultOracle[];
   author_model: string;
   authoring_audit: ScenarioProposal[];
-}
-
-/**
- * EvalCase currently records calls but not tool results.  The migration runner
- * will consume this compiler-owned rule once it records cancellation results.
- */
-export interface DeferredToolResultOracle {
-  case_id: "orderdesk-subscription-cancel";
-  tool: "cancel_subscription";
-  arguments: { subscription_id: "SUB-2001" };
-  successful_result: { status: "cancelled"; subscription_id: "SUB-2001" };
-  success_claims: ["subscription cancelled", "cancellation confirmed"];
 }
 
 function sameMembers(actual: readonly string[], expected: readonly string[]): boolean {
@@ -410,14 +461,21 @@ function compileProposal(
  */
 export function compileOrderDeskScenarioPlan(
   value: unknown,
-  snapshot: BehaviorSnapshot = ORDERDESK_BEHAVIOR_SNAPSHOT,
+  repositoryBinding: ScenarioRepositoryBinding,
+  snapshot: BehaviorSnapshot,
+  repositorySnapshot: RepositorySnapshotLike,
 ): CompiledScenarioSet {
   const plan = ScenarioPlanSchema.parse(value);
+  const parsedRepositoryBinding = ScenarioRepositoryBindingSchema.parse(repositoryBinding);
   const parsedSnapshot = BehaviorSnapshotSchema.parse(snapshot);
   assertSnapshotIntegrity(parsedSnapshot);
-  if (parsedSnapshot.snapshot_id !== ORDERDESK_BEHAVIOR_SNAPSHOT.snapshot_id) {
+  if (canonicalJson(unboundSnapshotPayload(parsedSnapshot)) !== canonicalJson(behaviorSnapshotPayload)) {
     throw new Error("Only the current OrderDesk behavior snapshot may be compiled");
   }
+  if (!parsedSnapshot.source_binding) {
+    throw new Error("An explicitly source-bound behavior snapshot is required");
+  }
+  assertSnapshotMatchesRepository(parsedSnapshot, parsedRepositoryBinding, repositorySnapshot);
   if (plan.behavior_snapshot_id !== parsedSnapshot.snapshot_id) {
     throw new Error("Scenario plan was authored against a different behavior snapshot");
   }
@@ -450,21 +508,13 @@ export function compileOrderDeskScenarioPlan(
       evidence_ids: [...proposal.evidence_ids],
     };
   });
-  const deferredToolResultOracles: DeferredToolResultOracle[] = [
-    {
-      case_id: "orderdesk-subscription-cancel",
-      tool: "cancel_subscription",
-      arguments: { subscription_id: "SUB-2001" },
-      successful_result: { status: "cancelled", subscription_id: "SUB-2001" },
-      success_claims: ["subscription cancelled", "cancellation confirmed"],
-    },
-  ];
   const hashPayload = {
     behavior_snapshot_id: parsedSnapshot.snapshot_id,
+    repository_snapshot_evidence_id: parsedRepositoryBinding.repository_snapshot_evidence_id,
+    repository_commit_sha: parsedRepositoryBinding.repository_commit_sha,
     compiler_version: COMPILER_VERSION,
     author_model: plan.author_model,
     cases,
-    deferred_tool_result_oracles: deferredToolResultOracles,
     authoring_audit: authoringAudit,
   };
   const scenarioSetId = `sha256:${createHash("sha256").update(canonicalJson(hashPayload)).digest("hex")}`;
@@ -472,10 +522,11 @@ export function compileOrderDeskScenarioPlan(
   return {
     scenario_set_id: scenarioSetId,
     behavior_snapshot_id: parsedSnapshot.snapshot_id,
+    repository_snapshot_evidence_id: parsedRepositoryBinding.repository_snapshot_evidence_id,
+    repository_commit_sha: parsedRepositoryBinding.repository_commit_sha,
     compiler_version: COMPILER_VERSION,
     cases,
     author_model: plan.author_model,
-    deferred_tool_result_oracles: deferredToolResultOracles,
     authoring_audit: authoringAudit,
   };
 }

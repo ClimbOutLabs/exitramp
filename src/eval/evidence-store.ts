@@ -43,7 +43,7 @@ export class EvidenceIntegrityError extends Error {
 
 function evidenceDirectory(directory?: string): string {
   const configured = directory ?? process.env.EXITRAMP_EVIDENCE_DIR;
-  return resolve(configured && configured.length > 0 ? configured : "evidence");
+  return resolve(configured && configured.length > 0 ? configured : ".exitramp/evidence");
 }
 
 function assertEvidenceId(evidenceId: string): void {

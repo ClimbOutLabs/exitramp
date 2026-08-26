@@ -7,13 +7,6 @@ export const ToolNameSchema = z.enum([
   "cancel_subscription",
 ]);
 
-export const ToolCallSchema = z
-  .object({
-    name: z.string().min(1),
-    arguments: z.record(z.string(), z.unknown()),
-  })
-  .strict();
-
 // Tool results are retained as JSON, alongside the exact call arguments.  A
 // recursive schema is used so undefined/function values cannot be hidden in a
 // result before it becomes evidence.
@@ -28,17 +21,186 @@ const JsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
   ]),
 );
 
-export const ToolResultSchema = z
+const JsonObjectSchema = z.record(z.string(), JsonValueSchema);
+
+export const OrderIdSchema = z.string().regex(/^ORD-\d{4}$/);
+export const SubscriptionIdSchema = z.string().regex(/^SUB-\d{4}$/);
+export const EscalationReasonSchema = z.enum([
+  "damaged item",
+  "refund request",
+  "duplicate_charge",
+]);
+export const TicketIdSchema = z.string().regex(/^TKT-\d{4}$/);
+
+const LookupOrderCallSchema = z
   .object({
-    name: ToolNameSchema,
-    arguments: z.record(z.string(), JsonValueSchema),
-    result: JsonValueSchema,
+    name: z.literal("lookup_order"),
+    arguments: z.object({ order_id: OrderIdSchema }).strict(),
+  })
+  .strict();
+const EscalateTicketCallSchema = z
+  .object({
+    name: z.literal("escalate_ticket"),
+    arguments: z.object({ order_id: OrderIdSchema, reason: EscalationReasonSchema }).strict(),
+  })
+  .strict();
+const IssueRefundCallSchema = z
+  .object({
+    name: z.literal("issue_refund"),
+    arguments: z.object({ order_id: OrderIdSchema }).strict(),
+  })
+  .strict();
+const CancelSubscriptionCallSchema = z
+  .object({
+    name: z.literal("cancel_subscription"),
+    arguments: z.object({ subscription_id: SubscriptionIdSchema }).strict(),
   })
   .strict();
 
+/** Valid executable calls exposed by the fixed OrderDesk contract. */
+export const ExecutableToolCallSchema = z.discriminatedUnion("name", [
+  LookupOrderCallSchema,
+  EscalateTicketCallSchema,
+  IssueRefundCallSchema,
+  CancelSubscriptionCallSchema,
+]);
+
 /**
- * The model reports durable facts; presentation code renders the customer
- * reply from them.  This avoids treating phrase matching as grounding.
+ * A provider can still return an unknown tool or invalid JSON arguments even
+ * when the provider contract requests strict tools.  Preserve that attempt as
+ * evidence without treating it as an executable OrderDesk call.
+ */
+const InvalidToolCallSchema = z
+  .object({
+    name: z.literal("invalid_tool_call"),
+    attempted_name: z.string().min(1).max(200),
+    arguments: JsonObjectSchema,
+  })
+  .strict();
+
+export const ToolCallSchema = z.discriminatedUnion("name", [
+  LookupOrderCallSchema,
+  EscalateTicketCallSchema,
+  IssueRefundCallSchema,
+  CancelSubscriptionCallSchema,
+  InvalidToolCallSchema,
+]);
+
+const LookupOrderResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("in transit"), order_id: OrderIdSchema }).strict(),
+  z.object({ status: z.literal("delivered"), order_id: OrderIdSchema }).strict(),
+  z.object({ status: z.literal("not_found"), order_id: OrderIdSchema }).strict(),
+]);
+const EscalateTicketResultSchema = z
+  .object({
+    status: z.literal("queued"),
+    ticket_id: TicketIdSchema,
+    order_id: OrderIdSchema,
+    reason: EscalationReasonSchema,
+  })
+  .strict();
+const IssueRefundResultSchema = z
+  .object({
+    status: z.literal("denied"),
+    order_id: OrderIdSchema,
+    reason: z.literal("human approval required"),
+  })
+  .strict();
+const CancelSubscriptionResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("cancelled"), subscription_id: SubscriptionIdSchema }).strict(),
+  z.object({ status: z.literal("not_found"), subscription_id: SubscriptionIdSchema }).strict(),
+]);
+const InvalidToolResultSchema = z
+  .object({ status: z.literal("error"), error: z.string().min(1).max(500) })
+  .strict();
+
+/**
+ * Results are typed per tool and bound to the exact call arguments.  This
+ * makes malformed or embellished provider traces invalid evidence rather than
+ * an input the scorer has to guess how to interpret.
+ */
+export const ToolResultSchema = z
+  .discriminatedUnion("name", [
+    z
+      .object({
+        name: z.literal("lookup_order"),
+        arguments: LookupOrderCallSchema.shape.arguments,
+        result: LookupOrderResultSchema,
+      })
+      .strict(),
+    z
+      .object({
+        name: z.literal("escalate_ticket"),
+        arguments: EscalateTicketCallSchema.shape.arguments,
+        result: EscalateTicketResultSchema,
+      })
+      .strict(),
+    z
+      .object({
+        name: z.literal("issue_refund"),
+        arguments: IssueRefundCallSchema.shape.arguments,
+        result: IssueRefundResultSchema,
+      })
+      .strict(),
+    z
+      .object({
+        name: z.literal("cancel_subscription"),
+        arguments: CancelSubscriptionCallSchema.shape.arguments,
+        result: CancelSubscriptionResultSchema,
+      })
+      .strict(),
+    z
+      .object({
+        name: z.literal("invalid_tool_call"),
+        attempted_name: z.string().min(1).max(200),
+        arguments: JsonObjectSchema,
+        result: InvalidToolResultSchema,
+      })
+      .strict(),
+  ])
+  .superRefine((trace, context) => {
+    if (trace.name === "lookup_order" && trace.result.order_id !== trace.arguments.order_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "order_id"],
+        message: "lookup_order result order_id must match its call arguments",
+      });
+    }
+    if (
+      trace.name === "escalate_ticket" &&
+      (trace.result.order_id !== trace.arguments.order_id ||
+        trace.result.reason !== trace.arguments.reason ||
+        trace.result.ticket_id !== `TKT-${trace.arguments.order_id.slice(4)}`)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["result"],
+        message: "escalate_ticket result must match its call arguments and ticket format",
+      });
+    }
+    if (trace.name === "issue_refund" && trace.result.order_id !== trace.arguments.order_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "order_id"],
+        message: "issue_refund result order_id must match its call arguments",
+      });
+    }
+    if (
+      trace.name === "cancel_subscription" &&
+      trace.result.subscription_id !== trace.arguments.subscription_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "subscription_id"],
+        message: "cancel_subscription result subscription_id must match its call arguments",
+      });
+    }
+  });
+
+/**
+ * The model reports durable facts only. Trusted presentation code renders any
+ * customer-facing reply from those facts after verifying the local tool trace;
+ * model-authored prose is never an evaluation or presentation input.
  */
 export const ResponseFactSchema = z.discriminatedUnion("kind", [
   z
@@ -77,21 +239,15 @@ export const SupportDecisionSchema = z
       "billing_issue",
       "subscription_cancel",
     ]),
-    order_id: z.string().regex(/^ORD-\d{4}$/).nullable(),
-    subscription_id: z.string().regex(/^SUB-\d{4}$/).nullable().optional(),
+    order_id: OrderIdSchema.nullable(),
+    subscription_id: SubscriptionIdSchema.nullable().optional(),
     action: z.enum(["answer", "lookup", "escalate", "cancel"]),
     urgency: z.enum(["low", "normal", "high"]),
     response: ResponseFactSchema,
-    reply: z.string().min(1),
   })
   .strict();
 
-export const ExpectedToolSchema = z
-  .object({
-    name: ToolNameSchema,
-    arguments: z.record(z.string(), z.unknown()),
-  })
-  .strict();
+export const ExpectedToolSchema = ExecutableToolCallSchema;
 
 export const ExpectedDecisionSchema = z
   .object({
@@ -100,7 +256,9 @@ export const ExpectedDecisionSchema = z
     subscription_id: SupportDecisionSchema.shape.subscription_id.optional(),
     action: SupportDecisionSchema.shape.action.optional(),
     urgency: SupportDecisionSchema.shape.urgency.optional(),
-    response: SupportDecisionSchema.shape.response.optional(),
+    // Grounding is always against an exact compiler-owned typed fact; it is
+    // intentionally not inferred from mutable natural-language labels.
+    response: SupportDecisionSchema.shape.response,
   })
   .strict();
 
@@ -111,8 +269,6 @@ export const EvalCaseSchema = z
     critical: z.boolean(),
     expected_tools: z.array(ExpectedToolSchema),
     forbidden_tools: z.array(ToolNameSchema),
-    required_facts: z.array(z.string().min(1)),
-    forbidden_claims: z.array(z.string().min(1)),
     expected_decision: ExpectedDecisionSchema,
   })
   .strict();
@@ -152,6 +308,23 @@ export const BehaviorScenarioSlotSchema = z
   })
   .strict();
 
+/**
+ * The source revision that the trusted behavior/compiler snapshot was
+ * derived from.  This is deliberately separate from the human-facing
+ * evidence summaries: the exact Git blob IDs make the compiler's inputs
+ * auditable without exposing source text in inspect output.
+ */
+export const BehaviorSourceBindingSchema = z
+  .object({
+    repository_snapshot_id: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    repository_commit_sha: z.string().min(1).max(200),
+    files: z.array(z.object({
+      path: z.string().min(1).max(500),
+      git_blob_sha: z.string().regex(/^[a-f0-9]{40}$/),
+    }).strict()).min(1),
+  })
+  .strict();
+
 export const BehaviorSnapshotSchema = z
   .object({
     schema_version: z.literal(1),
@@ -159,6 +332,7 @@ export const BehaviorSnapshotSchema = z
     contract_version: z.string().min(1).max(100),
     evidence: z.array(BehaviorEvidenceSchema).min(1),
     scenario_slots: z.array(BehaviorScenarioSlotSchema).length(10),
+    source_binding: BehaviorSourceBindingSchema.optional(),
   })
   .strict()
   .superRefine((snapshot, context) => {
@@ -204,6 +378,18 @@ export const ScenarioPlanSchema = z
   })
   .strict();
 
+/**
+ * Trusted repository provenance supplied by the MCP layer, never by the
+ * scenario-authoring model. It binds a frozen compiler result to the exact
+ * source snapshot whose build receipts are later verified.
+ */
+export const ScenarioRepositoryBindingSchema = z
+  .object({
+    repository_snapshot_evidence_id: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    repository_commit_sha: z.string().min(1).max(200),
+  })
+  .strict();
+
 export const ObservationSchema = z
   .object({
     case_id: z.string().min(1),
@@ -234,14 +420,17 @@ export type ScenarioSlot = z.infer<typeof ScenarioSlotSchema>;
 export type BehaviorEvidence = z.infer<typeof BehaviorEvidenceSchema>;
 export type BehaviorScenarioSlot = z.infer<typeof BehaviorScenarioSlotSchema>;
 export type BehaviorSnapshot = z.infer<typeof BehaviorSnapshotSchema>;
+export type BehaviorSourceBinding = z.infer<typeof BehaviorSourceBindingSchema>;
 export type ScenarioProposal = z.infer<typeof ScenarioProposalSchema>;
 export type ScenarioPlan = z.infer<typeof ScenarioPlanSchema>;
+export type ScenarioRepositoryBinding = z.infer<typeof ScenarioRepositoryBindingSchema>;
 export type Observation = z.infer<typeof ObservationSchema>;
 export type MigrationPolicy = z.infer<typeof PolicySchema>;
 
 export interface CaseResult {
   case_id: string;
   critical: boolean;
+  case_id_match: boolean;
   schema_valid: boolean;
   tool_selection_pass: boolean;
   tool_arguments_pass: boolean;

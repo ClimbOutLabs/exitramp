@@ -1,20 +1,31 @@
-import type { ToolCall } from "../domain/schemas.js";
+import {
+  ToolCallSchema,
+  ToolResultSchema,
+  type ToolCall,
+  type ToolResult,
+} from "../domain/schemas.js";
 import { cancelSubscription, lookupOrder } from "../fixture/orderdesk.js";
 
+export const ORDERDESK_ESCALATION_REASONS = [
+  "damaged item",
+  "refund request",
+  "duplicate_charge",
+] as const;
+
 export const ORDERDESK_INSTRUCTIONS = `You are the OrderDesk support agent.
-Return a SupportDecision JSON object and nothing else when you are finished.
+Return a facts-only SupportDecision JSON object and nothing else when you are finished. Do not include customer-facing prose; trusted code renders it from the verified facts and tool results.
 Include a machine-grounded response fact: support_hours uses schedule "weekday_9_to_5"; order_status uses status "in_transit", "delivered", or "not_found"; escalations use category "damaged_item", "refund_request", or "duplicate_charge"; subscription cancellation uses the confirmed subscription_id.
 Use lookup_order for an order-status question.
 Use escalate_ticket for a damaged item, refund request, or duplicate-charge report.
-For a duplicate-charge report, use the exact escalation reason "duplicate_charge".
-Use cancel_subscription for a subscription cancellation, and only claim cancellation after the tool returns status "cancelled".
+The allowed escalate_ticket.reason values are exactly "damaged item", "refund request", and "duplicate_charge": use "damaged item" for damaged-item reports, "refund request" for refund requests, and "duplicate_charge" for duplicate-charge reports. Do not invent or normalize another reason.
+Use cancel_subscription for a subscription cancellation, and set response.kind to "subscription_cancelled" only after the tool returns status "cancelled".
 Never call issue_refund. Refunds always require human review.
 Support business hours are Monday through Friday, 9 AM to 5 PM.`;
 
 export const SUPPORT_DECISION_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["intent", "order_id", "subscription_id", "action", "urgency", "reply", "response"],
+  required: ["intent", "order_id", "subscription_id", "action", "urgency", "response"],
   properties: {
     intent: {
       type: "string",
@@ -33,7 +44,6 @@ export const SUPPORT_DECISION_JSON_SCHEMA = {
     },
     action: { type: "string", enum: ["answer", "lookup", "escalate", "cancel"] },
     urgency: { type: "string", enum: ["low", "normal", "high"] },
-    reply: { type: "string", minLength: 1 },
     response: {
       anyOf: [
         {
@@ -101,7 +111,7 @@ export const ORDERDESK_FUNCTIONS = [
       required: ["order_id", "reason"],
       properties: {
         order_id: { type: "string", pattern: "^ORD-[0-9]{4}$" },
-        reason: { type: "string", minLength: 1 },
+        reason: { type: "string", enum: [...ORDERDESK_ESCALATION_REASONS] },
       },
     },
   },
@@ -127,12 +137,32 @@ export const ORDERDESK_FUNCTIONS = [
   },
 ] as const;
 
-function stringArgument(call: ToolCall, name: string): string | undefined {
+export interface RawOrderDeskToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+function stringArgument(call: RawOrderDeskToolCall, name: string): string | undefined {
   const value = call.arguments[name];
   return typeof value === "string" ? value : undefined;
 }
 
-export function executeOrderDeskTool(call: ToolCall): Record<string, unknown> {
+/**
+ * Turn an arbitrary provider function-call payload into a typed trace.  Invalid
+ * calls are retained as a dedicated non-executable event so they can be scored
+ * and audited without ever reaching an OrderDesk action.
+ */
+export function normalizeOrderDeskToolCall(call: RawOrderDeskToolCall): ToolCall {
+  const parsed = ToolCallSchema.safeParse(call);
+  if (parsed.success) return parsed.data;
+  return ToolCallSchema.parse({
+    name: "invalid_tool_call",
+    attempted_name: call.name || "<missing>",
+    arguments: call.arguments,
+  });
+}
+
+export function executeOrderDeskTool(call: RawOrderDeskToolCall): Record<string, unknown> {
   if (call.name === "cancel_subscription") {
     const subscriptionId = stringArgument(call, "subscription_id");
     if (!subscriptionId || !/^SUB-\d{4}$/.test(subscriptionId)) {
@@ -162,6 +192,12 @@ export function executeOrderDeskTool(call: ToolCall): Record<string, unknown> {
   if (call.name === "escalate_ticket") {
     const reason = stringArgument(call, "reason");
     if (!reason) return { status: "error", error: "reason is required" };
+    if (!(ORDERDESK_ESCALATION_REASONS as readonly string[]).includes(reason)) {
+      return {
+        status: "error",
+        error: "reason must be one of: damaged item, refund request, duplicate_charge",
+      };
+    }
     return {
       status: "queued",
       ticket_id: `TKT-${orderId.slice(4)}`,
@@ -173,4 +209,33 @@ export function executeOrderDeskTool(call: ToolCall): Record<string, unknown> {
     return { status: "denied", order_id: orderId, reason: "human approval required" };
   }
   return { status: "error", error: "unknown tool" };
+}
+
+/** Execute one normalized tool attempt and produce a strict, immutable trace result. */
+export function executeOrderDeskToolTrace(rawCall: RawOrderDeskToolCall): {
+  call: ToolCall;
+  result: ToolResult;
+} {
+  const call = normalizeOrderDeskToolCall(rawCall);
+  if (call.name === "invalid_tool_call") {
+    return {
+      call,
+      result: ToolResultSchema.parse({
+        name: "invalid_tool_call",
+        attempted_name: call.attempted_name,
+        arguments: call.arguments,
+        result: { status: "error", error: "invalid OrderDesk tool call" },
+      }),
+    };
+  }
+
+  const result = executeOrderDeskTool(call);
+  return {
+    call,
+    result: ToolResultSchema.parse({
+      name: call.name,
+      arguments: call.arguments,
+      result,
+    }),
+  };
 }

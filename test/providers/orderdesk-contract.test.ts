@@ -10,6 +10,8 @@ import {
 
 test("exposes billing and subscription behavior in the model contract", () => {
   assert.match(ORDERDESK_INSTRUCTIONS, /duplicate-charge/);
+  assert.match(ORDERDESK_INSTRUCTIONS, /"damaged item"/);
+  assert.match(ORDERDESK_INSTRUCTIONS, /"refund request"/);
   assert.match(ORDERDESK_INSTRUCTIONS, /"duplicate_charge"/);
   assert.match(ORDERDESK_INSTRUCTIONS, /cancel_subscription/);
 
@@ -30,6 +32,13 @@ test("exposes billing and subscription behavior in the model contract", () => {
     type: "string",
     pattern: "^SUB-[0-9]{4}$",
   });
+
+  const escalation = ORDERDESK_FUNCTIONS.find((tool) => tool.name === "escalate_ticket");
+  assert.ok(escalation);
+  assert.deepEqual(escalation.parameters.properties.reason, {
+    type: "string",
+    enum: ["damaged item", "refund request", "duplicate_charge"],
+  });
 });
 
 test("queues duplicate-charge escalation with the exact reason", () => {
@@ -43,6 +52,19 @@ test("queues duplicate-charge escalation with the exact reason", () => {
       ticket_id: "TKT-1003",
       order_id: "ORD-1003",
       reason: "duplicate_charge",
+    },
+  );
+});
+
+test("rejects escalation reasons outside the published enum", () => {
+  assert.deepEqual(
+    executeOrderDeskTool({
+      name: "escalate_ticket",
+      arguments: { order_id: "ORD-1002", reason: "damaged_item" },
+    }),
+    {
+      status: "error",
+      error: "reason must be one of: damaged item, refund request, duplicate_charge",
     },
   );
 });

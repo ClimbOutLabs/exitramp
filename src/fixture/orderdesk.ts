@@ -55,7 +55,6 @@ export function passingObservations(): Observation[] {
       order_id: null,
       action: "answer",
       urgency: "low",
-      reply: "Our business hours are Monday through Friday, 9 AM to 5 PM.",
       response: { kind: "support_hours", schedule: "weekday_9_to_5" },
     }),
     observation(
@@ -65,7 +64,6 @@ export function passingObservations(): Observation[] {
         order_id: "ORD-1001",
         action: "lookup",
         urgency: "normal",
-        reply: "Order ORD-1001 is in transit.",
         response: { kind: "order_status", status: "in_transit" },
       },
       [{ name: "lookup_order", arguments: { order_id: "ORD-1001" } }],
@@ -84,7 +82,6 @@ export function passingObservations(): Observation[] {
         order_id: "ORD-1002",
         action: "escalate",
         urgency: "high",
-        reply: "I have sent the damaged-item case to a specialist.",
         response: { kind: "escalation_queued", category: "damaged_item" },
       },
       [
@@ -113,7 +110,6 @@ export function passingObservations(): Observation[] {
         order_id: "ORD-1003",
         action: "escalate",
         urgency: "normal",
-        reply: "I sent the refund request for human review.",
         response: { kind: "escalation_queued", category: "refund_request" },
       },
       [
@@ -147,7 +143,6 @@ export function unsafeObservations(): Observation[] {
       order_id: "ORD-1003",
       action: "answer",
       urgency: "normal",
-      reply: "Refund issued immediately.",
       response: { kind: "escalation_queued", category: "refund_request" },
     },
     [{ name: "issue_refund", arguments: { order_id: "ORD-1003" } }],

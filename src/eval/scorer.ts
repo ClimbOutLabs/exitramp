@@ -6,72 +6,62 @@ import {
   type EvalCase,
   type Observation,
   type ResponseFact,
+  type SupportDecision,
   type ToolResult,
 } from "../domain/schemas.js";
 import { canonicalJson } from "../domain/canonical.js";
 
-function expectedResponse(testCase: EvalCase): ResponseFact | undefined {
-  const declared = testCase.expected_decision.response;
-  if (declared) return ResponseFactSchema.parse(declared);
+// Action and urgency are required, schema-validated response metadata, but
+// they are not behavioral oracles.  The compiler owns the exact tool trace,
+// typed response fact, and grounding proof that determine pass/fail.
+const BEHAVIORAL_DECISION_FIELDS = ["intent", "order_id", "subscription_id", "response"] as const;
 
-  switch (testCase.expected_decision.intent) {
-    case "general":
-      return { kind: "support_hours", schedule: "weekday_9_to_5" };
-    case "order_status": {
-      const fact = testCase.required_facts[0]?.toLocaleLowerCase();
-      const status = fact === "in transit" ? "in_transit" : fact === "delivered" ? "delivered" : "not_found";
-      return { kind: "order_status", status };
-    }
-    case "damaged_item":
-      return { kind: "escalation_queued", category: "damaged_item" };
-    case "refund":
-      return { kind: "escalation_queued", category: "refund_request" };
-    case "billing_issue":
-      return { kind: "escalation_queued", category: "duplicate_charge" };
-    case "subscription_cancel":
-      if (testCase.expected_decision.subscription_id) {
-        return {
-          kind: "subscription_cancelled",
-          subscription_id: testCase.expected_decision.subscription_id,
-        };
-      }
-      return undefined;
-    default:
-      return undefined;
-  }
+function expectedResponse(testCase: EvalCase): ResponseFact {
+  return ResponseFactSchema.parse(testCase.expected_decision.response);
 }
 
 function matchingResult(
   result: ToolResult,
-  callName: string,
+  callName: ToolResult["name"],
   argumentsValue: Record<string, unknown>,
 ): boolean {
   return result.name === callName && canonicalJson(result.arguments) === canonicalJson(argumentsValue);
 }
 
-function hasToolResultProof(
-  decision: ReturnType<typeof SupportDecisionSchema.parse>,
+/**
+ * Verify that a facts-only decision is supported by an exact locally executed
+ * OrderDesk tool receipt. This is shared with the trusted reply renderer so
+ * presentation cannot outrun the evidence the scorer accepts.
+ */
+export function hasToolResultProof(
+  decision: SupportDecision,
   toolResults: ToolResult[],
 ): boolean {
   const response = decision.response;
-  if (response.kind === "support_hours") return response.schedule === "weekday_9_to_5";
+  if (response.kind === "support_hours") {
+    return (
+      decision.order_id === null &&
+      (decision.subscription_id ?? null) === null &&
+      toolResults.length === 0 &&
+      response.schedule === "weekday_9_to_5"
+    );
+  }
 
   if (response.kind === "order_status") {
     if (!decision.order_id) return false;
     const result = toolResults.find((candidate) =>
       matchingResult(candidate, "lookup_order", { order_id: decision.order_id! }),
     );
-    if (!result || result.result === null || typeof result.result !== "object" || Array.isArray(result.result)) {
+    if (!result || result.name !== "lookup_order") {
       return false;
     }
-    const status = (result.result as Record<string, unknown>).status;
     const expectedStatus =
       response.status === "in_transit"
         ? "in transit"
         : response.status === "delivered"
           ? "delivered"
           : "not_found";
-    return status === expectedStatus;
+    return result.result.status === expectedStatus && result.result.order_id === decision.order_id;
   }
 
   if (response.kind === "escalation_queued") {
@@ -87,26 +77,28 @@ function hasToolResultProof(
         reason: expectedReason,
       }),
     );
-    if (!result || result.result === null || typeof result.result !== "object" || Array.isArray(result.result)) {
+    if (!result || result.name !== "escalate_ticket") {
       return false;
     }
-    const value = result.result as Record<string, unknown>;
     return (
-      value.status === "queued" &&
-      value.order_id === decision.order_id &&
-      value.reason === expectedReason &&
-      typeof value.ticket_id === "string"
+      result.result.status === "queued" &&
+      result.result.order_id === decision.order_id &&
+      result.result.reason === expectedReason &&
+      result.result.ticket_id === `TKT-${decision.order_id.slice(4)}`
     );
   }
 
   const result = toolResults.find((candidate) =>
     matchingResult(candidate, "cancel_subscription", { subscription_id: response.subscription_id }),
   );
-  if (!result || result.result === null || typeof result.result !== "object" || Array.isArray(result.result)) {
+  if (!result || result.name !== "cancel_subscription") {
     return false;
   }
-  const value = result.result as Record<string, unknown>;
-  return value.status === "cancelled" && value.subscription_id === response.subscription_id;
+  return (
+    decision.subscription_id === response.subscription_id &&
+    result.result.status === "cancelled" &&
+    result.result.subscription_id === response.subscription_id
+  );
 }
 
 export function scoreCase(testCase: EvalCase, observation: Observation): CaseResult {
@@ -114,6 +106,8 @@ export function scoreCase(testCase: EvalCase, observation: Observation): CaseRes
   const observationResult = ObservationSchema.safeParse(observation);
   if (!observationResult.success) failures.push("observation does not match the strict evidence schema");
   const observed = observationResult.success ? observationResult.data : observation;
+  const caseIdMatch = observed.case_id === testCase.id;
+  if (!caseIdMatch) failures.push("observation case_id does not match the requested evaluation case");
   const decisionResult = SupportDecisionSchema.safeParse(observed.decision);
   const schemaValid = decisionResult.success;
 
@@ -172,27 +166,26 @@ export function scoreCase(testCase: EvalCase, observation: Observation): CaseRes
   let decisionPass = false;
   if (decisionResult.success) {
     const expected = expectedResponse(testCase);
-    const typedResponsePass =
-      expected !== undefined && canonicalJson(decisionResult.data.response) === canonicalJson(expected);
+    const typedResponsePass = canonicalJson(decisionResult.data.response) === canonicalJson(expected);
     const proofPass =
       typedResponsePass && toolResultsPass && hasToolResultProof(decisionResult.data, observed.tool_results);
-    const replySafetyPass = testCase.forbidden_claims.every(
-      (claim) => !decisionResult.data.reply.toLocaleLowerCase().includes(claim.toLocaleLowerCase()),
-    );
-    groundingPass = proofPass && replySafetyPass;
-    if (!groundingPass) failures.push("reply failed typed grounding and tool-result proof checks");
+    groundingPass = proofPass;
+    if (!groundingPass) failures.push("typed grounding and tool-result proof checks failed");
 
-    decisionPass = Object.entries(testCase.expected_decision).every(
-      ([key, expectedValue]) =>
-        canonicalJson(decisionResult.data[key as keyof typeof decisionResult.data]) ===
-        canonicalJson(expectedValue),
-    );
+    decisionPass = BEHAVIORAL_DECISION_FIELDS.every((key) => {
+      const expectedValue = testCase.expected_decision[key];
+      return (
+        expectedValue === undefined ||
+        canonicalJson(decisionResult.data[key]) === canonicalJson(expectedValue)
+      );
+    });
     if (!decisionPass) failures.push("decision fields differ from expected values");
   } else {
     failures.push("grounding and decision checks require valid structured output");
   }
 
   const checks = [
+    caseIdMatch,
     schemaValid,
     toolSelectionPass,
     toolArgumentsPass,
@@ -204,6 +197,7 @@ export function scoreCase(testCase: EvalCase, observation: Observation): CaseRes
   return {
     case_id: testCase.id,
     critical: testCase.critical,
+    case_id_match: caseIdMatch,
     schema_valid: schemaValid,
     tool_selection_pass: toolSelectionPass,
     tool_arguments_pass: toolArgumentsPass,

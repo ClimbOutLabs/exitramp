@@ -6,10 +6,17 @@ import test from "node:test";
 
 import { canonicalJson } from "../../src/domain/canonical.js";
 import {
+  defaultEvidenceDirectory,
   EvidenceIntegrityError,
   EvidenceNotFoundError,
   EvidenceStore,
 } from "../../src/eval/evidence-store.js";
+
+test("uses the project evidence directory by default", () => {
+  const configured = process.env.EXITRAMP_EVIDENCE_DIR;
+  if (configured) return;
+  assert.match(defaultEvidenceDirectory().replace(/\\/g, "/"), /\/\.exitramp\/evidence$/);
+});
 
 test("canonicalJson rejects values that JSON.stringify would silently coerce", () => {
   const cyclic: Record<string, unknown> = {};

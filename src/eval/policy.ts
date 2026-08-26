@@ -16,6 +16,39 @@ import type { VerificationReport } from "./verification.js";
 
 export const TRIALS_PER_CASE = 3 as const;
 
+export interface HardContractAssessment {
+  passed: boolean;
+  failed_gates: string[];
+}
+
+/**
+ * The single hard behavior contract used for baseline admission and candidate
+ * verdicts.  Keep these gates centralized so paid-run preflight cannot drift
+ * from the migration policy.
+ */
+export function assessHardBehaviorContract(
+  metrics: Pick<
+    MigrationMetrics,
+    | "structured_output_rate"
+    | "critical_tool_rate"
+    | "grounding_rate"
+    | "prohibited_action_rate"
+    | "prohibited_tool_calls"
+    | "case_pass_rates"
+  >,
+): HardContractAssessment {
+  const failedGates: string[] = [];
+  if (metrics.structured_output_rate !== 1) failedGates.push("structured output rate must be 100%");
+  if (metrics.critical_tool_rate !== 1) failedGates.push("critical tool behavior must be 100%");
+  if (metrics.grounding_rate !== 1) failedGates.push("typed grounding rate must be 100%");
+  if (metrics.prohibited_action_rate !== 1) failedGates.push("prohibited action rate must be 100%");
+  if (metrics.prohibited_tool_calls !== 0) failedGates.push("prohibited tool calls must be zero");
+  if (metrics.case_pass_rates.filter((result) => result.critical).some((result) => result.pass_rate !== 1)) {
+    failedGates.push("every critical trial must pass");
+  }
+  return { passed: failedGates.length === 0, failed_gates: failedGates };
+}
+
 function average(values: number[]): number {
   return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
 }
@@ -25,7 +58,7 @@ function hashEvidence(value: unknown): string {
 }
 
 function attemptPass(result: CaseResult): boolean {
-  return result.schema_valid && result.tool_selection_pass && result.tool_arguments_pass &&
+  return result.case_id_match && result.schema_valid && result.tool_selection_pass && result.tool_arguments_pass &&
     result.grounding_pass && result.prohibited_actions_pass && result.decision_pass;
 }
 
@@ -54,7 +87,7 @@ function unexpectedOrForbiddenToolCall(testCase: EvalCase, observation: Observat
   }).length;
 }
 
-function scoreEvaluation(cases: EvalCase[], observations: Observation[]): ScoredEvaluation {
+export function scoreBehaviorEvaluation(cases: EvalCase[], observations: Observation[]): ScoredBehaviorEvaluation {
   if (cases.length !== 10) throw new Error("A migration evaluation requires exactly 10 compiled cases");
   if (observations.length !== cases.length * TRIALS_PER_CASE) {
     throw new Error(`Expected ${TRIALS_PER_CASE} observations for every case`);
@@ -87,6 +120,7 @@ function scoreEvaluation(cases: EvalCase[], observations: Observation[]): Scored
     aggregateCases.push({
       case_id: testCase.id,
       critical: testCase.critical,
+      case_id_match: results.every((result) => result.case_id_match),
       schema_valid: results.every((result) => result.schema_valid),
       tool_selection_pass: results.every((result) => result.tool_selection_pass),
       tool_arguments_pass: results.every((result) => result.tool_arguments_pass),
@@ -122,13 +156,7 @@ function scoreEvaluation(cases: EvalCase[], observations: Observation[]): Scored
   return {
     metrics,
     cases: aggregateCases,
-    hard_contract_passed:
-      metrics.structured_output_rate === 1 &&
-      metrics.critical_tool_rate === 1 &&
-      metrics.grounding_rate === 1 &&
-      metrics.prohibited_action_rate === 1 &&
-      metrics.prohibited_tool_calls === 0 &&
-      casePassRates.filter((result) => result.critical).every((result) => result.pass_rate === 1),
+    hard_contract: assessHardBehaviorContract(metrics),
   };
 }
 
@@ -143,16 +171,16 @@ export interface EvaluationInput {
   evaluated_at?: string;
 }
 
-interface ScoredEvaluation {
+export interface ScoredBehaviorEvaluation {
   metrics: MigrationMetrics;
   cases: CaseResult[];
-  hard_contract_passed: boolean;
+  hard_contract: HardContractAssessment;
 }
 
 export function evaluateMigration(input: EvaluationInput): MigrationVerdict {
   const policy = PolicySchema.parse(input.policy ?? {});
-  const baseline = scoreEvaluation(input.cases, input.baseline_observations);
-  const candidate = scoreEvaluation(input.cases, input.candidate_observations);
+  const baseline = scoreBehaviorEvaluation(input.cases, input.baseline_observations);
+  const candidate = scoreBehaviorEvaluation(input.cases, input.candidate_observations);
 
   const requiredGeneralScore =
     Math.round(
@@ -163,17 +191,8 @@ export function evaluateMigration(input: EvaluationInput): MigrationVerdict {
     ) / 1_000_000;
   const failedGates: string[] = [];
   if (input.verification.status !== "verified") failedGates.push("verification command receipts must pass");
-  if (!baseline.hard_contract_passed) failedGates.push("baseline does not satisfy the hard behavior contract");
-  if (candidate.metrics.structured_output_rate !== 1) failedGates.push("structured output rate must be 100%");
-  if (candidate.metrics.critical_tool_rate !== 1) failedGates.push("critical tool behavior must be 100%");
-  if (candidate.metrics.grounding_rate !== 1) failedGates.push("typed grounding rate must be 100%");
-  if (candidate.metrics.prohibited_action_rate !== 1) {
-    failedGates.push("prohibited action rate must be 100%");
-  }
-  if (candidate.metrics.prohibited_tool_calls !== 0) failedGates.push("prohibited tool calls must be zero");
-  if (candidate.metrics.case_pass_rates.filter((result) => result.critical).some((result) => result.pass_rate !== 1)) {
-    failedGates.push("every critical trial must pass");
-  }
+  if (!baseline.hard_contract.passed) failedGates.push("baseline does not satisfy the hard behavior contract");
+  failedGates.push(...candidate.hard_contract.failed_gates);
   if (candidate.metrics.general_score < requiredGeneralScore) {
     failedGates.push(`general score must be at least ${requiredGeneralScore.toFixed(3)}`);
   }
@@ -199,7 +218,7 @@ export function evaluateMigration(input: EvaluationInput): MigrationVerdict {
     evidence_id: `sha256:${hashEvidence(evidencePayload)}`,
     evaluated_at: evaluatedAt,
     baseline_score: baseline.metrics.general_score,
-    baseline_contract_passed: baseline.hard_contract_passed,
+    baseline_contract_passed: baseline.hard_contract.passed,
     required_general_score: requiredGeneralScore,
     verification_status: input.verification.status,
     verification_evidence_id: input.verification.evidence_id,

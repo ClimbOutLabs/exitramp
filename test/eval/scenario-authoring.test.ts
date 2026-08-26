@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   ORDERDESK_BEHAVIOR_SNAPSHOT,
-  compileOrderDeskScenarioPlan,
+  authoritativeSourceManifestForCurrentCheckout,
+  bindOrderDeskBehaviorSnapshot,
+  compileOrderDeskScenarioPlan as compileWithRepositoryBinding,
 } from "../../src/eval/scenario-authoring.js";
 import type { ScenarioPlan, ScenarioSlot } from "../../src/domain/schemas.js";
 
@@ -20,12 +22,31 @@ const VARIANTS: Record<ScenarioSlot, string> = {
   "subscription-cancel": "direct",
 };
 
+const ORDERDESK_CONTRACT_V1_SNAPSHOT_ID =
+  "sha256:b4be010621ed24b4d056bc6cef70457e13d0173500f7d3b76b36d464ec0d10ea";
+const TEST_REPOSITORY_BINDING = {
+  repository_snapshot_evidence_id: `sha256:${"0".repeat(64)}`,
+  repository_commit_sha: "test-scenario-compiler-commit",
+} as const;
+
+const LOCAL_REPOSITORY_SNAPSHOT = {
+  snapshot_id: TEST_REPOSITORY_BINDING.repository_snapshot_evidence_id,
+  resolved_sha: TEST_REPOSITORY_BINDING.repository_commit_sha,
+  tree_truncated: false,
+  files: authoritativeSourceManifestForCurrentCheckout(),
+};
+const BOUND_BEHAVIOR_SNAPSHOT = bindOrderDeskBehaviorSnapshot(LOCAL_REPOSITORY_SNAPSHOT);
+
+function compileOrderDeskScenarioPlan(value: unknown, snapshot = BOUND_BEHAVIOR_SNAPSHOT) {
+  return compileWithRepositoryBinding(value, TEST_REPOSITORY_BINDING, snapshot, LOCAL_REPOSITORY_SNAPSHOT);
+}
+
 function validPlan(): ScenarioPlan {
   return {
     schema_version: 1,
-    behavior_snapshot_id: ORDERDESK_BEHAVIOR_SNAPSHOT.snapshot_id,
+    behavior_snapshot_id: BOUND_BEHAVIOR_SNAPSHOT.snapshot_id,
     author_model: "trueforge/scenario-author-v1",
-    proposals: ORDERDESK_BEHAVIOR_SNAPSHOT.scenario_slots.map((slot) => ({
+    proposals: BOUND_BEHAVIOR_SNAPSHOT.scenario_slots.map((slot) => ({
       slot: slot.slot,
       surface_variant: VARIANTS[slot.slot],
       title: `Coverage for ${slot.slot}`,
@@ -39,9 +60,9 @@ function validPlan(): ScenarioPlan {
 function planFromPublicSnapshot(): ScenarioPlan {
   return {
     schema_version: 1,
-    behavior_snapshot_id: ORDERDESK_BEHAVIOR_SNAPSHOT.snapshot_id,
+    behavior_snapshot_id: BOUND_BEHAVIOR_SNAPSHOT.snapshot_id,
     author_model: "trueforge/inspect-only-author",
-    proposals: ORDERDESK_BEHAVIOR_SNAPSHOT.scenario_slots.map((slot) => ({
+    proposals: BOUND_BEHAVIOR_SNAPSHOT.scenario_slots.map((slot) => ({
       slot: slot.slot,
       surface_variant: slot.allowed_variants[0]!,
       title: `Public coverage for ${slot.slot}`,
@@ -63,6 +84,14 @@ test("compiles exactly the ten mandatory, behavior-grounded OrderDesk scenarios"
   const compiled = compileOrderDeskScenarioPlan(validPlan());
 
   assert.equal(compiled.cases.length, 10);
+  assert.equal(ORDERDESK_BEHAVIOR_SNAPSHOT.contract_version, "orderdesk-contract-v2");
+  assert.equal(compiled.compiler_version, "orderdesk-scenario-compiler-v2");
+  assert.equal(
+    compiled.cases.every(
+      (testCase) => !("action" in testCase.expected_decision) && !("urgency" in testCase.expected_decision),
+    ),
+    true,
+  );
   assert.deepEqual(
     compiled.cases.map((testCase) => testCase.id),
     ORDERDESK_BEHAVIOR_SNAPSHOT.scenario_slots.map((slot) => `orderdesk-${slot.slot}`),
@@ -109,15 +138,6 @@ test("compiles exactly the ten mandatory, behavior-grounded OrderDesk scenarios"
     compiled.cases.find((testCase) => testCase.id === "orderdesk-subscription-cancel")!.expected_decision.response,
     { kind: "subscription_cancelled", subscription_id: "SUB-2001" },
   );
-  assert.deepEqual(compiled.deferred_tool_result_oracles, [
-    {
-      case_id: "orderdesk-subscription-cancel",
-      tool: "cancel_subscription",
-      arguments: { subscription_id: "SUB-2001" },
-      successful_result: { status: "cancelled", subscription_id: "SUB-2001" },
-      success_claims: ["subscription cancelled", "cancellation confirmed"],
-    },
-  ]);
 });
 
 test("does not let author audit text alter a compiled prompt or oracle", () => {
@@ -142,6 +162,11 @@ test("rejects stale snapshots, missing coverage, duplicate slots, and unapproved
   const stale = validPlan();
   stale.behavior_snapshot_id = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
   assert.throws(() => compileOrderDeskScenarioPlan(stale), /different behavior snapshot/);
+
+  const v1Plan = validPlan();
+  v1Plan.behavior_snapshot_id = ORDERDESK_CONTRACT_V1_SNAPSHOT_ID;
+  assert.notEqual(ORDERDESK_BEHAVIOR_SNAPSHOT.snapshot_id, ORDERDESK_CONTRACT_V1_SNAPSHOT_ID);
+  assert.throws(() => compileOrderDeskScenarioPlan(v1Plan), /different behavior snapshot/);
 
   const duplicate = validPlan();
   duplicate.proposals[1] = { ...duplicate.proposals[0]! };
@@ -173,12 +198,31 @@ test("strict plan schema rejects model-supplied oracle fields and unrelated evid
 });
 
 test("rejects a behavior snapshot whose content was altered while retaining a current-looking ID", () => {
-  const tamperedSnapshot = structuredClone(ORDERDESK_BEHAVIOR_SNAPSHOT);
+  const tamperedSnapshot = structuredClone(BOUND_BEHAVIOR_SNAPSHOT);
   tamperedSnapshot.evidence[0]!.summary = "Support is always open.";
 
   assert.throws(
     () => compileOrderDeskScenarioPlan(validPlan(), tamperedSnapshot),
     /content hash does not match snapshot_id/,
+  );
+});
+
+test("core compiler requires a bound snapshot and repository manifest", () => {
+  assert.throws(
+    () => compileWithRepositoryBinding(
+      validPlan(),
+      TEST_REPOSITORY_BINDING,
+      ORDERDESK_BEHAVIOR_SNAPSHOT,
+      LOCAL_REPOSITORY_SNAPSHOT,
+    ),
+    /source-bound behavior snapshot/,
+  );
+  assert.throws(
+    () => (compileWithRepositoryBinding as unknown as (value: unknown, binding: unknown) => unknown)(
+      validPlan(),
+      TEST_REPOSITORY_BINDING,
+    ),
+    /expected object|source-bound/i,
   );
 });
 

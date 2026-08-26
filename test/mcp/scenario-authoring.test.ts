@@ -7,18 +7,23 @@ import test from "node:test";
 import { EvidenceStore } from "../../src/eval/evidence-store.js";
 import {
   ORDERDESK_BEHAVIOR_SNAPSHOT,
+  authoritativeSourceManifestForCurrentCheckout,
+  bindOrderDeskBehaviorSnapshot,
 } from "../../src/eval/scenario-authoring.js";
 import {
+  CompileOrderDeskScenarioPlanInputSchema,
   RunMigrationEvaluationInputSchema,
   compileScenarioPlanWithEvidence,
   loadFrozenScenarioSet,
+  persistRepositorySnapshot,
 } from "../../src/mcp/server.js";
 import type { ScenarioPlan } from "../../src/domain/schemas.js";
+import type { RepositorySnapshot } from "../../src/mcp/github.js";
 
-function inspectedPlan(): ScenarioPlan {
+function inspectedPlan(behaviorSnapshotId = ORDERDESK_BEHAVIOR_SNAPSHOT.snapshot_id): ScenarioPlan {
   return {
     schema_version: 1,
-    behavior_snapshot_id: ORDERDESK_BEHAVIOR_SNAPSHOT.snapshot_id,
+    behavior_snapshot_id: behaviorSnapshotId,
     author_model: "trueforge/mcp-inspect-author",
     proposals: ORDERDESK_BEHAVIOR_SNAPSHOT.scenario_slots.map((slot) => ({
       slot: slot.slot,
@@ -30,18 +35,66 @@ function inspectedPlan(): ScenarioPlan {
   };
 }
 
+function repositorySnapshot(): RepositorySnapshot {
+  return {
+    snapshot_id: `sha256:${"1".repeat(64)}`,
+    owner: "acme",
+    repository: "orderdesk",
+    requested_ref: "main",
+    resolved_sha: "scenario-compile-commit",
+    default_branch: "main",
+    tree_truncated: false,
+    files: [
+      { path: "package.json", sha: "file-sha", size: 42 },
+      ...authoritativeSourceManifestForCurrentCheckout(),
+    ],
+  };
+}
+
 test("persists snapshot, model plan, and frozen compiled scenario evidence with parent links", async () => {
   const directory = await mkdtemp(join(tmpdir(), "exitramp-mcp-scenarios-"));
   try {
     const store = new EvidenceStore({ directory, now: () => new Date("2026-08-25T12:00:00.000Z") });
-    const result = await compileScenarioPlanWithEvidence(store, inspectedPlan());
+    const repository = await persistRepositorySnapshot(store, repositorySnapshot());
+    const boundSnapshot = bindOrderDeskBehaviorSnapshot(repositorySnapshot());
+    const result = await compileScenarioPlanWithEvidence(
+      store,
+      repository.repository_snapshot_evidence_id,
+      inspectedPlan(boundSnapshot.snapshot_id),
+    );
     assert.equal(result.cases.length, 10);
+    assert.equal(result.repository_snapshot_evidence_id, repository.repository_snapshot_evidence_id);
+    assert.equal(result.repository_commit_sha, "scenario-compile-commit");
+    assert.notEqual(result.behavior_snapshot_id, ORDERDESK_BEHAVIOR_SNAPSHOT.snapshot_id);
+    assert.equal(result.behavior_contract_version, "orderdesk-contract-v2");
+    assert.equal(result.compiler_version, "orderdesk-scenario-compiler-v2");
     assert.match(result.compiled_evidence_id, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(result.compiled_scenario_evidence_id, result.compiled_evidence_id);
+    assert.deepEqual(result.scenario_suite, {
+      label: "OrderDesk adversarial safety suite",
+      summary: "10 tough cases covering order status, damaged items, refund pressure, duplicate charges, and subscription cancellation.",
+      case_count: 10,
+      technical_evidence_id: result.compiled_evidence_id,
+    });
     const compiled = await store.read(result.compiled_evidence_id);
     assert.equal(compiled.artifact_type, "compiled-scenario-set");
-    assert.deepEqual(compiled.parent_ids.sort(), [result.plan_evidence_id, result.snapshot_evidence_id].sort());
+    assert.deepEqual(
+      compiled.parent_ids.sort(),
+      [
+        result.plan_evidence_id,
+        result.snapshot_evidence_id,
+        repository.repository_snapshot_evidence_id,
+      ].sort(),
+    );
+    const behaviorSnapshot = await store.read(result.snapshot_evidence_id);
+    assert.deepEqual(behaviorSnapshot.parent_ids, [repository.repository_snapshot_evidence_id]);
+    const persistedBoundSnapshot = behaviorSnapshot.payload as { source_binding?: { repository_snapshot_id: string; repository_commit_sha: string; files: unknown[] } };
+    assert.equal(persistedBoundSnapshot.source_binding?.repository_snapshot_id, repositorySnapshot().snapshot_id);
+    assert.equal(persistedBoundSnapshot.source_binding?.repository_commit_sha, "scenario-compile-commit");
+    assert.equal(persistedBoundSnapshot.source_binding?.files.length, 4);
     const frozen = await loadFrozenScenarioSet(store, result.compiled_evidence_id);
     assert.equal(frozen.compiled.scenario_set_id, result.scenario_set_id);
+    assert.equal(frozen.repository_snapshot.resolved_sha, "scenario-compile-commit");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -57,13 +110,105 @@ test("public inspect output supports first-pass coverage selection without leaki
   assert.equal(serialized.includes("prompt_requirements"), false);
 });
 
-test("run schema is strict and contains receipts rather than a test-pass boolean", () => {
-  const value = {
+test("behavior binding fails closed for incomplete or mismatched source manifests", () => {
+  const files = authoritativeSourceManifestForCurrentCheckout();
+  assert.throws(
+    () => bindOrderDeskBehaviorSnapshot({
+      ...repositorySnapshot(),
+      tree_truncated: true,
+      files,
+    }),
+    /tree is truncated/,
+  );
+  assert.throws(
+    () => bindOrderDeskBehaviorSnapshot({
+      ...repositorySnapshot(),
+      files: files.filter((file) => file.path !== "src/domain/schemas.ts"),
+    }),
+    /missing authoritative source file/,
+  );
+  assert.throws(
+    () => bindOrderDeskBehaviorSnapshot({
+      ...repositorySnapshot(),
+      files: files.map((file) => file.path === "src/domain/schemas.ts"
+        ? { ...file, sha: "0".repeat(40) }
+        : file),
+    }),
+    /does not match repository snapshot blob/,
+  );
+});
+
+test("evidence compilation rejects the unbound public snapshot ID", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-mcp-unbound-plan-"));
+  try {
+    const store = new EvidenceStore({ directory });
+    const repository = await persistRepositorySnapshot(store, repositorySnapshot());
+    await assert.rejects(
+      compileScenarioPlanWithEvidence(store, repository.repository_snapshot_evidence_id, inspectedPlan()),
+      /different behavior snapshot/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("run schema requires strict human-readable approval references for TrueForge", () => {
+  assert.match(
+    RunMigrationEvaluationInputSchema.shape.scenario_suite.description ?? "",
+    /validates every field against immutable evidence/i,
+  );
+  assert.match(
+    RunMigrationEvaluationInputSchema.shape.verified_build.description ?? "",
+    /validates every field against immutable evidence/i,
+  );
+
+  const valid = {
     baseline_target: "openai/gpt-5.6-luna",
     candidate_target: "together/openai/gpt-oss-20b",
-    compiled_scenario_evidence_id: `sha256:${"a".repeat(64)}`,
-    verification_evidence_id: `sha256:${"b".repeat(64)}`,
-    repository_tests_passed: true,
+    scenario_suite: {
+      label: "OrderDesk adversarial safety suite",
+      summary: "10 tough cases covering order status, damaged items, refund pressure, duplicate charges, and subscription cancellation.",
+      case_count: 10,
+      technical_evidence_id: `sha256:${"a".repeat(64)}`,
+    },
+    verified_build: {
+      label: "Receipt-verified build",
+      summary: "Commit abc123 passed pnpm typecheck and pnpm test according to Daytona-labeled receipts.",
+      verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
+      commit_sha: "abc123",
+      status: "verified",
+      technical_evidence_id: `sha256:${"b".repeat(64)}`,
+    },
   };
-  assert.equal(RunMigrationEvaluationInputSchema.safeParse(value).success, false);
+  assert.equal(RunMigrationEvaluationInputSchema.safeParse(valid).success, true);
+  assert.equal(RunMigrationEvaluationInputSchema.safeParse({
+    ...valid,
+    repository_tests_passed: true,
+  }).success, false);
+  assert.equal(RunMigrationEvaluationInputSchema.safeParse({
+    baseline_target: valid.baseline_target,
+    candidate_target: valid.candidate_target,
+    compiled_scenario_evidence_id: valid.scenario_suite.technical_evidence_id,
+    verification_evidence_id: valid.verified_build.technical_evidence_id,
+  }).success, false);
+  assert.equal(RunMigrationEvaluationInputSchema.safeParse({
+    ...valid,
+    scenario_suite: { ...valid.scenario_suite, unexpected: true },
+  }).success, false);
+});
+
+test("compile schema requires a repository snapshot separately from the model-authored plan", () => {
+  const value = {
+    repository_snapshot_evidence_id: `sha256:${"a".repeat(64)}`,
+    plan: inspectedPlan(),
+  };
+  assert.equal(CompileOrderDeskScenarioPlanInputSchema.safeParse(value).success, true);
+  assert.equal(CompileOrderDeskScenarioPlanInputSchema.safeParse(inspectedPlan()).success, false);
+  assert.equal(
+    CompileOrderDeskScenarioPlanInputSchema.safeParse({
+      ...value,
+      plan: { ...inspectedPlan(), repository_snapshot_evidence_id: value.repository_snapshot_evidence_id },
+    }).success,
+    false,
+  );
 });
