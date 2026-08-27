@@ -7,16 +7,14 @@ import type {
 } from "openai/resources/chat/completions";
 import type { ResponseFunctionToolCall } from "openai/resources/responses/responses";
 
-import type { EvalCase, Observation, ToolCall } from "../domain/schemas.js";
+import type { EvalCase, Observation, ToolCall, ToolResult } from "../domain/schemas.js";
 import { calculateCost, getModelTarget, type ModelTargetId } from "./catalog.js";
 import {
-  executeOrderDeskTool,
+  executeOrderDeskToolTrace,
   ORDERDESK_FUNCTIONS,
   ORDERDESK_INSTRUCTIONS,
   SUPPORT_DECISION_JSON_SCHEMA,
 } from "./orderdesk-contract.js";
-
-const MAX_TOOL_ROUNDS = 3;
 
 export class MissingProviderCredentialError extends Error {
   constructor(environmentVariable: string) {
@@ -34,6 +32,14 @@ export interface AdapterOptions {
   fetch?: typeof fetch;
   timeout_ms?: number;
 }
+
+/**
+ * A benchmark trial may issue at most one provider request per deliberate tool
+ * round.
+ * Automatic SDK retries would create invisible, potentially billable requests
+ * outside the immutable attempt record, so evaluation fails closed instead.
+ */
+export const MAX_PROVIDER_RETRIES = 0 as const;
 
 function parseArguments(value: string): Record<string, unknown> {
   try {
@@ -76,7 +82,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
       baseURL: target.base_url,
       fetch: this.fetcher,
       timeout: this.timeoutMs,
-      maxRetries: 2,
+      maxRetries: MAX_PROVIDER_RETRIES,
     });
     return target.provider === "openai"
       ? this.invokeResponses(client, targetId, testCase)
@@ -89,14 +95,23 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
     testCase: EvalCase,
   ): Promise<Observation> {
     const target = getModelTarget(targetId);
+    const profile = target.evaluation_profile;
+    if (profile.request_api !== "responses") {
+      throw new Error(`Missing Responses evaluation profile for ${targetId}`);
+    }
     const startedAt = performance.now();
     const toolCalls: ToolCall[] = [];
+    const toolResults: ToolResult[] = [];
     let inputTokens = 0;
     let outputTokens = 0;
     let response = await client.responses.create({
       model: target.model,
       instructions: ORDERDESK_INSTRUCTIONS,
       input: testCase.prompt,
+      reasoning: { effort: profile.reasoning_effort },
+      temperature: profile.temperature,
+      max_output_tokens: profile.output_token_ceiling,
+      service_tier: profile.service_tier,
       tools: ORDERDESK_FUNCTIONS.map((tool) => ({
         type: "function" as const,
         name: tool.name,
@@ -104,7 +119,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
         parameters: tool.parameters,
         strict: true,
       })),
-      parallel_tool_calls: false,
+      parallel_tool_calls: profile.parallel_tool_calls,
       store: false,
       text: {
         format: {
@@ -116,7 +131,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
       },
     });
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    for (let round = 0; round < profile.max_tool_rounds; round += 1) {
       inputTokens += response.usage?.input_tokens ?? 0;
       outputTokens += response.usage?.output_tokens ?? 0;
       const calls = response.output.filter(
@@ -125,14 +140,26 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
       if (calls.length === 0) break;
 
       const outputs = calls.map((call) => {
-        const observed = { name: call.name, arguments: parseArguments(call.arguments) };
-        toolCalls.push(observed);
+        const trace = executeOrderDeskToolTrace({
+          name: call.name,
+          arguments: parseArguments(call.arguments),
+        });
+        toolCalls.push(trace.call);
+        toolResults.push(trace.result);
         return {
           type: "function_call_output" as const,
           call_id: call.call_id,
-          output: JSON.stringify(executeOrderDeskTool(observed)),
+          output: JSON.stringify(trace.result.result),
         };
       });
+
+      // The final allowed tool round deliberately has no continuation request.
+      // A fourth response would give this adapter an extra provider turn (and
+      // potentially billable usage) that the Together adapter does not get.
+      // Returning the function-call-only response leaves the observation
+      // schema-invalid and therefore reviewably failed by the scorer.
+      if (round === profile.max_tool_rounds - 1) break;
+
       const priorItems = response.output.filter(
         (item) =>
           item.type === "message" || item.type === "reasoning" || item.type === "function_call",
@@ -141,6 +168,10 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
         model: target.model,
         instructions: ORDERDESK_INSTRUCTIONS,
         input: [...priorItems, ...outputs],
+        reasoning: { effort: profile.reasoning_effort },
+        temperature: profile.temperature,
+        max_output_tokens: profile.output_token_ceiling,
+        service_tier: profile.service_tier,
         tools: ORDERDESK_FUNCTIONS.map((tool) => ({
           type: "function" as const,
           name: tool.name,
@@ -148,7 +179,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
           parameters: tool.parameters,
           strict: true,
         })),
-        parallel_tool_calls: false,
+        parallel_tool_calls: profile.parallel_tool_calls,
         store: false,
         text: {
           format: {
@@ -165,6 +196,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
       case_id: testCase.id,
       decision: parseDecision(response.output_text),
       tool_calls: toolCalls,
+      tool_results: toolResults,
       latency_ms: performance.now() - startedAt,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
@@ -178,10 +210,15 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
     testCase: EvalCase,
   ): Promise<Observation> {
     const target = getModelTarget(targetId);
+    const profile = target.evaluation_profile;
+    if (profile.request_api !== "chat_completions") {
+      throw new Error(`Missing chat-completion evaluation profile for ${targetId}`);
+    }
     const startedAt = performance.now();
     const toolCalls: ToolCall[] = [];
+    const toolResults: ToolResult[] = [];
     const messages: ChatCompletionMessageParam[] = [
-      { role: "system", content: ORDERDESK_INSTRUCTIONS },
+      { role: profile.instructions_role, content: ORDERDESK_INSTRUCTIONS },
       { role: "user", content: testCase.prompt },
     ];
     const tools: ChatCompletionTool[] = ORDERDESK_FUNCTIONS.map((tool) => ({
@@ -197,15 +234,16 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
     let outputTokens = 0;
     let finalContent: string | null = null;
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    for (let round = 0; round < profile.max_tool_rounds; round += 1) {
       const completion = await client.chat.completions.create({
         model: target.model,
         messages,
         tools,
         tool_choice: "auto",
-        parallel_tool_calls: false,
-        temperature: 0,
-        max_tokens: 1_000,
+        parallel_tool_calls: profile.parallel_tool_calls,
+        temperature: profile.temperature,
+        max_tokens: profile.output_token_ceiling,
+        reasoning_effort: profile.reasoning_effort,
         response_format: {
           type: "json_schema",
           json_schema: {
@@ -228,15 +266,16 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
 
       messages.push(message);
       for (const call of calls) {
-        const observed = {
+        const trace = executeOrderDeskToolTrace({
           name: call.function.name,
           arguments: parseArguments(call.function.arguments),
-        };
-        toolCalls.push(observed);
+        });
+        toolCalls.push(trace.call);
+        toolResults.push(trace.result);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: JSON.stringify(executeOrderDeskTool(observed)),
+          content: JSON.stringify(trace.result.result),
         });
       }
     }
@@ -245,6 +284,7 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
       case_id: testCase.id,
       decision: parseDecision(finalContent),
       tool_calls: toolCalls,
+      tool_results: toolResults,
       latency_ms: performance.now() - startedAt,
       input_tokens: inputTokens,
       output_tokens: outputTokens,

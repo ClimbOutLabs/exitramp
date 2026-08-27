@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title description">
+  <title id="title">ExitRamp evidence and approval workflow</title>
+  <desc id="description">A GitHub commit becomes a bound scenario suite and verified build. TrueForge pauses for human approval before paid model evaluation. ExitRamp then calculates a deterministic verdict and stores the evidence.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="430" rx="28" fill="#F8FAFC"/>
+  <text x="56" y="62" fill="#111827" font-family="Inter,Segoe UI,sans-serif" font-size="30" font-weight="700">Proof before spend. Approval before action.</text>
+  <text x="56" y="96" fill="#64748B" font-family="Inter,Segoe UI,sans-serif" font-size="17">Every step is bound to the same commit and preserved as evidence.</text>
+
+  <g font-family="Inter,Segoe UI,sans-serif">
+    <rect x="46" y="150" width="164" height="142" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="76" cy="180" r="16" fill="#111827"/>
+    <text x="76" y="186" text-anchor="middle" fill="#FFFFFF" font-size="15" font-weight="700">1</text>
+    <text x="70" y="225" fill="#111827" font-size="18" font-weight="700">Snapshot</text>
+    <text x="70" y="253" fill="#64748B" font-size="15">GitHub commit</text>
+    <text x="70" y="276" fill="#64748B" font-size="15">+ source blobs</text>
+
+    <path d="M218 221h36" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="262" y="150" width="164" height="142" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="292" cy="180" r="16" fill="#111827"/>
+    <text x="292" y="186" text-anchor="middle" fill="#FFFFFF" font-size="15" font-weight="700">2</text>
+    <text x="286" y="225" fill="#111827" font-size="18" font-weight="700">Compile</text>
+    <text x="286" y="253" fill="#64748B" font-size="15">10 grounded</text>
+    <text x="286" y="276" fill="#64748B" font-size="15">scenarios</text>
+
+    <path d="M434 221h36" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="478" y="150" width="164" height="142" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="508" cy="180" r="16" fill="#111827"/>
+    <text x="508" y="186" text-anchor="middle" fill="#FFFFFF" font-size="15" font-weight="700">3</text>
+    <text x="502" y="225" fill="#111827" font-size="18" font-weight="700">Verify</text>
+    <text x="502" y="253" fill="#64748B" font-size="15">Sandbox build</text>
+    <text x="502" y="276" fill="#64748B" font-size="15">receipts</text>
+
+    <path d="M650 221h36" stroke="#F59E0B" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="694" y="132" width="164" height="178" rx="18" fill="#FFF7ED" stroke="#F59E0B" stroke-width="3"/>
+    <circle cx="724" cy="164" r="16" fill="#F59E0B"/>
+    <text x="724" y="170" text-anchor="middle" fill="#111827" font-size="15" font-weight="800">4</text>
+    <text x="718" y="211" fill="#111827" font-size="18" font-weight="750">Approve</text>
+    <text x="718" y="239" fill="#92400E" font-size="15" font-weight="600">Human sees cost,</text>
+    <text x="718" y="262" fill="#92400E" font-size="15" font-weight="600">models + evidence</text>
+    <text x="718" y="290" fill="#B45309" font-size="13" font-weight="700">TRUEFORGE PAUSE</text>
+
+    <path d="M866 221h36" stroke="#F59E0B" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="910" y="150" width="164" height="142" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="940" cy="180" r="16" fill="#111827"/>
+    <text x="940" y="186" text-anchor="middle" fill="#FFFFFF" font-size="15" font-weight="700">5</text>
+    <text x="934" y="225" fill="#111827" font-size="18" font-weight="700">Evaluate</text>
+    <text x="934" y="253" fill="#64748B" font-size="15">Baseline first,</text>
+    <text x="934" y="276" fill="#64748B" font-size="15">then candidate</text>
+
+    <path d="M992 300v46H236v-36" fill="none" stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="238" y="330" width="724" height="62" rx="16" fill="#111827"/>
+    <text x="270" y="368" fill="#A7F3D0" font-size="18" font-weight="750">6 · Deterministic verdict</text>
+    <text x="520" y="368" fill="#E2E8F0" font-size="16">typed grounding · tool behavior · cost · evidence lineage</text>
+  </g>
+</svg>

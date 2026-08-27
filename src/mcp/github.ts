@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { z } from "zod/v4";
+
 const REPOSITORY_PART = /^[A-Za-z0-9_.-]+$/;
 const REF = /^[A-Za-z0-9_./-]+$/;
 
@@ -27,6 +29,21 @@ export interface RepositorySnapshot {
   tree_truncated: boolean;
   files: Array<{ path: string; sha: string; size: number | null }>;
 }
+
+export const RepositorySnapshotSchema = z.object({
+  snapshot_id: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  owner: z.string().min(1),
+  repository: z.string().min(1),
+  requested_ref: z.string().min(1),
+  resolved_sha: z.string().min(1),
+  default_branch: z.string().min(1),
+  tree_truncated: z.boolean(),
+  files: z.array(z.object({
+    path: z.string().min(1),
+    sha: z.string().min(1),
+    size: z.number().int().nonnegative().nullable(),
+  }).strict()),
+}).strict();
 
 export interface SnapshotOptions {
   fetch?: typeof fetch;
@@ -88,7 +105,7 @@ export async function snapshotRepository(
     .update(`${owner}/${repository}@${commit.sha}`)
     .digest("hex");
 
-  return {
+  return RepositorySnapshotSchema.parse({
     snapshot_id: `sha256:${digest}`,
     owner,
     repository,
@@ -97,5 +114,5 @@ export async function snapshotRepository(
     default_branch: repo.default_branch,
     tree_truncated: tree.truncated || blobs.length > files.length,
     files,
-  };
+  });
 }

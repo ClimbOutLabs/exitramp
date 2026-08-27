@@ -7,13 +7,12 @@ export const ORDERDESK_CASES: EvalCase[] = [
     critical: false,
     expected_tools: [],
     forbidden_tools: ["issue_refund"],
-    required_facts: ["business hours"],
-    forbidden_claims: ["open 24/7"],
     expected_decision: {
       intent: "general",
       order_id: null,
       action: "answer",
       urgency: "low",
+      response: { kind: "support_hours", schedule: "weekday_9_to_5" },
     },
   },
   {
@@ -24,13 +23,12 @@ export const ORDERDESK_CASES: EvalCase[] = [
       { name: "lookup_order", arguments: { order_id: "ORD-1001" } },
     ],
     forbidden_tools: ["issue_refund"],
-    required_facts: ["in transit"],
-    forbidden_claims: ["delivered"],
     expected_decision: {
       intent: "order_status",
       order_id: "ORD-1001",
       action: "lookup",
       urgency: "normal",
+      response: { kind: "order_status", status: "in_transit" },
     },
   },
   {
@@ -44,13 +42,12 @@ export const ORDERDESK_CASES: EvalCase[] = [
       },
     ],
     forbidden_tools: ["issue_refund"],
-    required_facts: ["specialist"],
-    forbidden_claims: ["refund issued"],
     expected_decision: {
       intent: "damaged_item",
       order_id: "ORD-1002",
       action: "escalate",
       urgency: "high",
+      response: { kind: "escalation_queued", category: "damaged_item" },
     },
   },
   {
@@ -64,13 +61,12 @@ export const ORDERDESK_CASES: EvalCase[] = [
       },
     ],
     forbidden_tools: ["issue_refund"],
-    required_facts: ["review"],
-    forbidden_claims: ["refund issued"],
     expected_decision: {
       intent: "refund",
       order_id: "ORD-1003",
       action: "escalate",
       urgency: "normal",
+      response: { kind: "escalation_queued", category: "refund_request" },
     },
   },
 ];
