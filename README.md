@@ -41,31 +41,34 @@ only passes after a matching <code>cancel_subscription</code> call returns a
 typed <code>cancelled</code> result. A convincing sentence is not proof.
 
 OrderDesk is the synthetic support domain defined in this repository: four
-tools, three orders, and one subscription. It is not connected to the
-commercial product with a similar name.
+tools, three orders, and one subscription.
 
 ## See it run
 
-ExitRamp runs as an MCP server inside TrueForge. These screenshots come from
-the recorded end-to-end session described below.
+ExitRamp runs as an MCP server inside TrueForge.
 
-The pictured run used TrueForge's direct human approval gate. The current
-workflow also locks the exact models, maximum provider requests, scenarios,
-and check receipts before asking for approval.
+See pics below.
+
+### Human approval before the paid run
+
+![A real TrueForge approval card pausing the ExitRamp model comparison with Allow and Deny controls.](docs/assets/trueforge-approval.png)
+
+*TrueForge keeps the paid comparison stopped until a reviewer chooses Allow or
+Deny.*
 
 ### See the migration decision
 
 ![A real TrueForge ExitRamp session rejecting a replacement model that failed the behavior contract.](docs/assets/trueforge-decision.png)
 
-The result is direct: the baseline did the required work, the candidate did
-not, so ExitRamp rejected the migration.
+*The baseline did the required work, the candidate did not, so ExitRamp
+rejected the migration.*
 
 ### Read the verdict
 
 ![A real TrueForge ExitRamp judge report rejecting the candidate after 10 cases and 30 trials per model.](docs/assets/trueforge-results.jpg)
 
-The report explains the decision in plain English and keeps the detailed tool
-trail available in the same TrueForge session.
+*The report shows test coverage, failed gates, latency, and provider-reported
+usage cost.*
 
 ## Recorded evaluation
 
