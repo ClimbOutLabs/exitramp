@@ -53,7 +53,7 @@ typed <code>cancelled</code> result. A convincing sentence is not proof.
 | Typed grounding | Passed within the full result | 2/30 (6.7%) |
 | Critical tool behavior | Passed within the full result | 0/27 (0%) |
 | Tool calls | Required work completed | **0** |
-| Observed estimated cost | $0.0131044 | $0.0011956 |
+| Estimated cost | $0.0131044 | $0.0011956 |
 
 **Verdict: migration rejected.** The candidate was about 71% lower in mean
 latency and 91% lower in observed evaluation cost in this run, but it skipped
