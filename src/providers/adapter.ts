@@ -25,6 +25,8 @@ export class MissingProviderCredentialError extends Error {
 
 export interface OrderDeskInvoker {
   invokeCase(targetId: ModelTargetId, testCase: EvalCase): Promise<Observation>;
+  /** In-process credential values used only to redact terminal error evidence. */
+  redactionSecrets?(targetId: ModelTargetId): readonly string[];
 }
 
 export interface AdapterOptions {
@@ -70,6 +72,12 @@ export class LiveOrderDeskAdapter implements OrderDeskInvoker {
     this.environment = options.environment ?? process.env;
     this.fetcher = options.fetch ?? fetch;
     this.timeoutMs = options.timeout_ms ?? 45_000;
+  }
+
+  redactionSecrets(targetId: ModelTargetId): readonly string[] {
+    const target = getModelTarget(targetId);
+    const apiKey = this.environment[target.api_key_env];
+    return apiKey ? [apiKey] : [];
   }
 
   async invokeCase(targetId: ModelTargetId, testCase: EvalCase): Promise<Observation> {

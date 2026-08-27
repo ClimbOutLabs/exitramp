@@ -64,6 +64,21 @@ class AttemptEvaluationError extends Error {
   }
 }
 
+const MAX_PROVIDER_ERROR_MESSAGE_LENGTH = 2_000;
+
+function boundedProviderErrorMessage(error: unknown, secrets: readonly string[]): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  let redacted = raw;
+  for (const secret of secrets) {
+    if (secret.length > 0) redacted = redacted.split(secret).join("[REDACTED]");
+  }
+  redacted = redacted
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]");
+  if (redacted.length <= MAX_PROVIDER_ERROR_MESSAGE_LENGTH) return redacted;
+  return `${redacted.slice(0, MAX_PROVIDER_ERROR_MESSAGE_LENGTH - 1)}…`;
+}
+
 export class ModelEvaluationError extends Error {
   readonly original_error: { name: string; message: string };
   readonly attempt_accounting: FailedEvaluationAttemptAccounting;
@@ -74,13 +89,14 @@ export class ModelEvaluationError extends Error {
     startedAttempts: number,
     completedAttempts: readonly EvaluationAttempt[],
     failedErrors: readonly unknown[],
+    redactionSecrets: readonly string[] = [],
   ) {
     const unwrappedOriginal = originalError instanceof AttemptEvaluationError
       ? originalError.original_error
       : originalError;
     const original = {
-      name: unwrappedOriginal instanceof Error ? unwrappedOriginal.name : "UnknownError",
-      message: unwrappedOriginal instanceof Error ? unwrappedOriginal.message : String(unwrappedOriginal),
+      name: "EvaluationAttemptError",
+      message: boundedProviderErrorMessage(unwrappedOriginal, redactionSecrets),
     };
     const failedObservations = failedErrors.flatMap((error) =>
       error instanceof AttemptEvaluationError ? [error.observation] : []
@@ -201,13 +217,23 @@ class ConcurrencyGate {
   constructor(private readonly limit: number) {}
 
   async run<T>(work: () => Promise<T>): Promise<T> {
-    if (this.active >= this.limit) await new Promise<void>((resolve) => this.waiting.push(resolve));
-    this.active += 1;
+    await new Promise<void>((resolve) => {
+      if (this.active < this.limit) {
+        this.active += 1;
+        resolve();
+      } else {
+        this.waiting.push(resolve);
+      }
+    });
     try {
       return await work();
     } finally {
-      this.active -= 1;
-      this.waiting.shift()?.();
+      const next = this.waiting.shift();
+      if (next) {
+        next();
+      } else {
+        this.active -= 1;
+      }
     }
   }
 }
@@ -287,6 +313,7 @@ export async function runModelEvaluation(
   gate = new ConcurrencyGate(MAX_CONCURRENT_INVOCATIONS),
 ): Promise<ModelEvaluationReport> {
   if (cases.length !== 10) throw new Error("Evaluation case count must be exactly 10 compiled cases");
+  const redactionSecrets = invoker.redactionSecrets?.(target) ?? [];
   const jobs = cases.flatMap((testCase) =>
     Array.from({ length: TRIALS_PER_CASE }, (_, index) => ({ testCase, trial: index + 1 })),
   );
@@ -314,6 +341,7 @@ export async function runModelEvaluation(
       error.started,
       error.completed as readonly EvaluationAttempt[],
       error.failures,
+      redactionSecrets,
     );
   }
   const observations = attempts.map((attempt) => attempt.observation);
@@ -348,6 +376,9 @@ export async function runMigrationComparison(
   verification: VerificationReport,
 ): Promise<MigrationComparisonResult> {
   if (baselineTarget === candidateTarget) throw new Error("Baseline and candidate must differ");
+  if (verification.status !== "verified") {
+    throw new Error("sandbox verification must pass before paid evaluation");
+  }
   const gate = new ConcurrencyGate(MAX_CONCURRENT_INVOCATIONS);
   const baseline = await runModelEvaluation(baselineTarget, invoker, cases, gate);
   if (!baseline.hard_contract.passed) return baselinePreflightFailure(baseline, candidateTarget);

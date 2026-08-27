@@ -4,7 +4,7 @@ import {
   compileOrderDeskScenarioPlan,
 } from "../eval/scenario-authoring.js";
 import { evaluateMigration } from "../eval/policy.js";
-import { VERIFICATION_COMMAND_PLAN, verifyCommandReceipts } from "../eval/verification.js";
+import { VERIFICATION_COMMAND_PLAN, verifySandboxReceipts } from "../eval/verification.js";
 import type {
   EvalCase,
   Observation,
@@ -43,9 +43,20 @@ const compiled = compileOrderDeskScenarioPlan(plan, {
   repository_snapshot_evidence_id: `sha256:${"0".repeat(64)}`,
   repository_commit_sha: "local-simulated-commit",
 }, localBehaviorSnapshot, localRepositorySnapshot);
-const verification = verifyCommandReceipts("local-simulated-commit", VERIFICATION_COMMAND_PLAN.map((command) => ({
-  command_id: command.id, command: command.command, commit_sha: "local-simulated-commit", exit_code: 0, timed_out: false,
-})));
+const verification = verifySandboxReceipts(
+  "local-simulated-commit",
+  VERIFICATION_COMMAND_PLAN.map((command, index) => ({
+    sandbox_id: "demo:local-sandbox",
+    command_id: command.id,
+    command: command.command,
+    commit_sha: "local-simulated-commit",
+    exit_code: 0,
+    timed_out: false,
+    stdout_sha256: "a".repeat(64),
+    stderr_sha256: `${String(index + 1)}${"a".repeat(63)}`,
+    duration_ms: 100 + index,
+  })),
+);
 
 function toolResult(testCase: EvalCase, call: EvalCase["expected_tools"][number]): ToolResult {
   if (call.name === "lookup_order") {

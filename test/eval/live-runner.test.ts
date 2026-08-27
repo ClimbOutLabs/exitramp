@@ -22,8 +22,8 @@ const SCENARIO_SUITE = {
   technical_evidence_id: `sha256:${"a".repeat(64)}`,
 };
 const VERIFIED_BUILD = {
-  label: "Receipt-verified build",
-  summary: "Commit commit-1 passed pnpm typecheck and pnpm test according to Daytona-labeled receipts.",
+  label: "Receipt-verified source checks",
+  summary: "Commit commit-1 passed pnpm typecheck and pnpm test according to caller-supplied sandbox receipts.",
   verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
   commit_sha: "commit-1",
   status: "verified" as const,
@@ -127,6 +127,27 @@ test("runs three trials per compiled case with a global concurrency cap", async 
   assert.equal(primary.technical_details.evaluation_envelope_id, `sha256:${"e".repeat(64)}`);
   assert.equal("internal_report_digest" in primary.technical_details, false);
   assertBoundedPrimaryOutput(primary);
+});
+
+test("rejects unverified evaluation before making any paid request", async () => {
+  let calls = 0;
+  const invoker: OrderDeskInvoker = {
+    async invokeCase() {
+      calls += 1;
+      return passingObservation(COMPILED_CASES[0]!);
+    },
+  };
+  await assert.rejects(
+    runMigrationComparison(
+      "openai/gpt-5.6-luna",
+      "together/openai/gpt-oss-20b",
+      invoker,
+      COMPILED_CASES,
+      { ...verification(), status: "rejected" },
+    ),
+    /sandbox verification must pass before paid evaluation/,
+  );
+  assert.equal(calls, 0);
 });
 
 test("rejects a candidate when one critical trial flakes", async () => {
@@ -327,6 +348,38 @@ test("failed candidate accounting retains the completed baseline usage", async (
       assert.equal(error.attempt_accounting.total_observed_input_tokens, 330);
       assert.equal(error.attempt_accounting.total_observed_output_tokens, 165);
       assert.equal(error.attempt_accounting.total_observed_successful_response_cost_usd, 0.03300000000000002);
+      return true;
+    },
+  );
+});
+
+test("provider error evidence is bounded and redacts the exact active credential", async () => {
+  const secret = "together-prod-credential-42";
+  const providerError = new Error(`Bearer private-token ${secret} ${"x".repeat(3_000)}`);
+  providerError.name = `Provider-${secret}`;
+  const invoker: OrderDeskInvoker = {
+    redactionSecrets(target) {
+      assert.equal(target, "together/openai/gpt-oss-20b");
+      return [secret];
+    },
+    async invokeCase() {
+      throw providerError;
+    },
+  };
+
+  await assert.rejects(
+    runModelEvaluation(
+      "together/openai/gpt-oss-20b",
+      invoker,
+      COMPILED_CASES,
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelEvaluationError);
+      assert.equal(error.original_error.name, "EvaluationAttemptError");
+      assert.ok(error.original_error.message.length <= 2_000);
+      assert.equal(error.original_error.message.includes("private-token"), false);
+      assert.equal(error.original_error.message.includes(secret), false);
+      assert.match(error.original_error.message, /\[REDACTED\]/);
       return true;
     },
   );

@@ -70,6 +70,7 @@ export function passingObservation(testCase: EvalCase, latencyMs = 25): Observat
     // response metadata variation.
     decision: {
       ...testCase.expected_decision,
+      subscription_id: testCase.expected_decision.subscription_id ?? null,
       action: "answer",
       urgency: "normal",
     } as SupportDecision,

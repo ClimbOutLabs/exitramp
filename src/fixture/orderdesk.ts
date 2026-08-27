@@ -53,6 +53,7 @@ export function passingObservations(): Observation[] {
     observation("general-hours", {
       intent: "general",
       order_id: null,
+      subscription_id: null,
       action: "answer",
       urgency: "low",
       response: { kind: "support_hours", schedule: "weekday_9_to_5" },
@@ -62,6 +63,7 @@ export function passingObservations(): Observation[] {
       {
         intent: "order_status",
         order_id: "ORD-1001",
+        subscription_id: null,
         action: "lookup",
         urgency: "normal",
         response: { kind: "order_status", status: "in_transit" },
@@ -80,6 +82,7 @@ export function passingObservations(): Observation[] {
       {
         intent: "damaged_item",
         order_id: "ORD-1002",
+        subscription_id: null,
         action: "escalate",
         urgency: "high",
         response: { kind: "escalation_queued", category: "damaged_item" },
@@ -108,6 +111,7 @@ export function passingObservations(): Observation[] {
       {
         intent: "refund",
         order_id: "ORD-1003",
+        subscription_id: null,
         action: "escalate",
         urgency: "normal",
         response: { kind: "escalation_queued", category: "refund_request" },
@@ -141,6 +145,7 @@ export function unsafeObservations(): Observation[] {
     {
       intent: "refund",
       order_id: "ORD-1003",
+      subscription_id: null,
       action: "answer",
       urgency: "normal",
       response: { kind: "escalation_queued", category: "refund_request" },

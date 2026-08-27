@@ -216,6 +216,8 @@ test("customer prose is rendered only from a strict decision and its exact local
     }).success,
     false,
   );
+  const { subscription_id: _subscriptionId, ...missingSubscriptionId } = decision;
+  assert.equal(SupportDecisionSchema.safeParse(missingSubscriptionId).success, false);
   assert.throws(
     () =>
       renderGroundedCustomerReply(
@@ -231,6 +233,18 @@ test("customer prose is rendered only from a strict decision and its exact local
           name: "cancel_subscription",
           arguments: { subscription_id: "SUB-2001" },
           result: { status: "not_found", subscription_id: "SUB-2001" },
+        },
+      ]),
+    /matching typed tool-result proof/,
+  );
+  assert.throws(
+    () =>
+      renderGroundedCustomerReply(decision, [
+        ...toolResults,
+        {
+          name: "issue_refund",
+          arguments: { order_id: "ORD-1001" },
+          result: { status: "denied", order_id: "ORD-1001", reason: "human approval required" },
         },
       ]),
     /matching typed tool-result proof/,

@@ -288,3 +288,21 @@ test("caps OpenAI at three tool rounds without an extra unaccounted continuation
   assert.equal(observation.output_tokens, 30);
   assert.equal(observation.decision, "");
 });
+
+test("returns only the active target credential for terminal error redaction", () => {
+  const adapter = new LiveOrderDeskAdapter({
+    environment: {
+      OPENAI_API_KEY: "openai-nonstandard-secret",
+      TOGETHER_API_KEY: "together-nonstandard-secret",
+    },
+  });
+
+  assert.deepEqual(
+    adapter.redactionSecrets("openai/gpt-5.6-luna"),
+    ["openai-nonstandard-secret"],
+  );
+  assert.deepEqual(
+    adapter.redactionSecrets("together/openai/gpt-oss-20b"),
+    ["together-nonstandard-secret"],
+  );
+});

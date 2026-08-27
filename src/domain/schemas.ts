@@ -240,7 +240,7 @@ export const SupportDecisionSchema = z
       "subscription_cancel",
     ]),
     order_id: OrderIdSchema.nullable(),
-    subscription_id: SubscriptionIdSchema.nullable().optional(),
+    subscription_id: SubscriptionIdSchema.nullable(),
     action: z.enum(["answer", "lookup", "escalate", "cancel"]),
     urgency: z.enum(["low", "normal", "high"]),
     response: ResponseFactSchema,

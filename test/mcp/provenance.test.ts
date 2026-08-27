@@ -11,6 +11,7 @@ import {
   buildMcpServer,
   buildEvaluationPrimaryResponse,
   compileScenarioPlanWithEvidence,
+  githubTokenForRepository,
   loadEvaluationEvidenceReferences,
   loadMigrationEvaluationApproval,
   loadSandboxVerification,
@@ -107,6 +108,30 @@ function receipts(commitSha = COMMIT): SandboxVerificationReceipt[] {
   }));
 }
 
+test("uses the GitHub token only for explicitly allowlisted repositories", () => {
+  assert.equal(
+    githubTokenForRepository(
+      "ClimbOutLabs",
+      "exitramp",
+      "secret-token",
+      "climboutlabs/exitramp, acme/public",
+    ),
+    "secret-token",
+  );
+  assert.equal(
+    githubTokenForRepository("acme", "other", "secret-token", "climboutlabs/exitramp"),
+    undefined,
+  );
+  assert.equal(
+    githubTokenForRepository("acme", "public", "secret-token", undefined),
+    undefined,
+  );
+  assert.throws(
+    () => githubTokenForRepository("acme", "public", "secret-token", "not-a-repository"),
+    /EXITRAMP_ALLOWED_REPOS/,
+  );
+});
+
 test("persists repository snapshots and binds sandbox verification to the resolved commit", async () => {
   const directory = await mkdtemp(join(tmpdir(), "exitramp-provenance-"));
   try {
@@ -123,8 +148,8 @@ test("persists repository snapshots and binds sandbox verification to the resolv
     );
     assert.equal(verification.status, "verified");
     assert.deepEqual(verification.verified_build, {
-      label: "Receipt-verified build",
-      summary: `Commit ${COMMIT} passed pnpm typecheck and pnpm test according to Daytona-labeled receipts.`,
+      label: "Receipt-verified source checks",
+      summary: `Commit ${COMMIT} passed pnpm typecheck and pnpm test according to caller-supplied sandbox receipts.`,
       verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
       commit_sha: COMMIT,
       status: "verified",
@@ -663,7 +688,7 @@ test("rejects receipts from a different commit and keeps the rejection reviewabl
     );
     assert.equal(verification.status, "rejected");
     assert.equal(verification.verified_build.label, "Receipt checks did not pass");
-    assert.match(verification.verified_build.summary, /did not pass pnpm typecheck and pnpm test according to Daytona-labeled receipts\./);
+    assert.match(verification.verified_build.summary, /did not pass pnpm typecheck and pnpm test according to caller-supplied sandbox receipts\./);
     assert.match(verification.verified_build.verification_scope, /Structural receipt validation only/);
     assert.ok(verification.failed_gates.includes("commit mismatch: test"));
     assert.ok(verification.failed_gates.includes("commit mismatch: typecheck"));
@@ -738,7 +763,7 @@ test("MCP persists failed paid evaluation accounting with the completed baseline
     });
     const structured = response.structuredContent as Record<string, unknown>;
     assert.equal(structured.status, "error");
-    assert.deepEqual(structured.error, { name: "Error", message: "candidate provider failed" });
+    assert.deepEqual(structured.error, { name: "EvaluationAttemptError", message: "candidate provider failed" });
     assert.match(String(structured.evaluation_evidence_id), /^sha256:[a-f0-9]{64}$/);
     assert.equal("observations" in structured, false);
     assert.equal("attempts" in structured, false);
@@ -769,7 +794,7 @@ test("MCP persists failed paid evaluation accounting with the completed baseline
     assert.deepEqual(artifact.payload, {
       status: "error",
       reason: "provider evaluation failed",
-      error: { name: "Error", message: "candidate provider failed" },
+      error: { name: "EvaluationAttemptError", message: "candidate provider failed" },
       scenario_set_id: compiled.scenario_set_id,
       repository_snapshot_evidence_id: repository.repository_snapshot_evidence_id,
       commit_sha: COMMIT,

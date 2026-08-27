@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title description">
-  <title id="title">ExitRamp verified evaluation result</title>
+  <title id="title">ExitRamp recorded evaluation result</title>
   <desc id="description">The baseline passed 30 of 30 attempts. The candidate passed 2 of 30 attempts and made zero tool calls. ExitRamp rejected the migration.</desc>
   <rect width="1200" height="520" rx="28" fill="#F8FAFC"/>
   <text x="56" y="68" fill="#111827" font-family="Inter,Segoe UI,sans-serif" font-size="30" font-weight="700">One cheaper model. Zero tool calls. Migration rejected.</text>

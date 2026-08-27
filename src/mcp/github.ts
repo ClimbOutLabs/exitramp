@@ -2,8 +2,14 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod/v4";
 
+import { canonicalJson } from "../domain/canonical.js";
+
 const REPOSITORY_PART = /^[A-Za-z0-9_.-]+$/;
 const REF = /^[A-Za-z0-9_./-]+$/;
+const DEFAULT_JSON_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
+// GitHub documents recursive tree responses as bounded at roughly 7 MB. Keep
+// a little headroom for JSON overhead while still refusing an unbounded body.
+const TREE_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 
 interface GitHubRepository {
   default_branch: string;
@@ -17,6 +23,14 @@ interface GitHubCommit {
 interface GitHubTree {
   truncated: boolean;
   tree: Array<{ path: string; type: string; sha: string; size?: number }>;
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Preserve the original HTTP or response-bound failure.
+  }
 }
 
 export interface RepositorySnapshot {
@@ -60,6 +74,7 @@ async function githubJson<T>(
   fetcher: typeof fetch,
   path: string,
   token?: string,
+  maxBytes = DEFAULT_JSON_RESPONSE_MAX_BYTES,
 ): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -70,9 +85,53 @@ async function githubJson<T>(
 
   const response = await fetcher(`https://api.github.com${path}`, { headers });
   if (!response.ok) {
+    await cancelResponseBody(response);
     throw new Error(`GitHub API returned ${response.status} for ${path}`);
   }
-  return (await response.json()) as T;
+
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const declaredBytes = Number(contentLength);
+    if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+      await cancelResponseBody(response);
+      throw new Error(`GitHub API response exceeds ${maxBytes} byte limit for ${path}`);
+    }
+  }
+
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw new Error(`GitHub API response exceeds ${maxBytes} byte limit for ${path}`);
+    }
+    return JSON.parse(text) as T;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`GitHub API response exceeds ${maxBytes} byte limit for ${path}`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(body)) as T;
 }
 
 export async function snapshotRepository(
@@ -95,18 +154,14 @@ export async function snapshotRepository(
     fetcher,
     `${basePath}/git/trees/${encodeURIComponent(commit.commit.tree.sha)}?recursive=1`,
     options.token,
+    TREE_RESPONSE_MAX_BYTES,
   );
 
   const blobs = tree.tree.filter((entry) => entry.type === "blob");
   const files = blobs
     .slice(0, 5_000)
     .map((entry) => ({ path: entry.path, sha: entry.sha, size: entry.size ?? null }));
-  const digest = createHash("sha256")
-    .update(`${owner}/${repository}@${commit.sha}`)
-    .digest("hex");
-
-  return RepositorySnapshotSchema.parse({
-    snapshot_id: `sha256:${digest}`,
+  const snapshot = {
     owner,
     repository,
     requested_ref: ref,
@@ -114,5 +169,11 @@ export async function snapshotRepository(
     default_branch: repo.default_branch,
     tree_truncated: tree.truncated || blobs.length > files.length,
     files,
+  };
+  const digest = createHash("sha256").update(canonicalJson(snapshot)).digest("hex");
+
+  return RepositorySnapshotSchema.parse({
+    snapshot_id: `sha256:${digest}`,
+    ...snapshot,
   });
 }
