@@ -70,7 +70,7 @@ sandbox ID is asserted here.
 | Typed grounding | — | 2/30 (6.7%) |
 | Critical tool behavior | — | 0/27 critical attempts (0%) |
 | Tool calls | — | 0 |
-| Estimated observed cost | $0.0131044 | $0.0011956 |
+| Estimated cost | $0.0131044 | $0.0011956 |
 
 Combined estimated observed cost was **$0.0143**. Cost is estimated from
 provider-reported successful-response usage, not an invoice or billing export.
