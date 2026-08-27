@@ -51,9 +51,11 @@ See pics below.
 
 ### Human approval before the paid run
 
-TrueForge keeps the paid comparison stopped until a reviewer sees the models,
-code version, test plan, cost limit, and permitted effects, then chooses Allow
-or Deny.
+![A real TrueForge approval screen showing a plain-English decision brief and the pending Allow or Deny gate.](docs/assets/trueforge-approval.png)
+
+*A real pending approval from the current-code session. Technical request
+details are collapsed so the reviewer sees the models, test scope, spending
+guardrail, and permitted effects before choosing Allow or Deny.*
 
 ### See the migration decision
 
