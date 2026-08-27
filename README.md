@@ -199,14 +199,18 @@ generic source-code semantic extractor. These boundaries are documented in the
 ## Qodo code-review evidence
 
 [PR #2](https://github.com/ClimbOutLabs/exitramp/pull/2) is the project's
-meaningful Qodo review trail. Qodo's deep review found three reliability defects
-in the evaluation and evidence paths:
+meaningful Qodo review trail. Across two deep-review passes, Qodo found five
+reliability defects in the evaluation and evidence paths:
 
 1. [A failed paid batch could keep scheduling work](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3869747074).
 2. [Timestamped evidence-writing tools incorrectly claimed idempotence](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3869747084).
 3. [Concurrent writers could expose a partial evidence file](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3869747091).
+4. [Cleanup could report a committed write as failed](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3870368221).
+5. [Storage failures could be mislabeled as provider failures](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3870368227).
 
-The PR corrects all three with focused regression tests.
+The PR corrects all five with focused regression tests. After two fix-and-review
+rounds, [Qodo's final pass](https://github.com/ClimbOutLabs/exitramp/pull/2#issuecomment-5436023672)
+reports zero bugs and zero rule violations on commit <code>c85688b</code>.
 
 ## Development disclosure
 
