@@ -111,6 +111,33 @@ test("approval consumption permits one winner under concurrent claims", async ()
   }
 });
 
+test("approval consumption fails closed when directory durability cannot be confirmed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-durability-"));
+  try {
+    const store = new EvidenceStore(directory);
+    const manifestEvidenceId = `sha256:${"c".repeat(64)}`;
+    let syncCalls = 0;
+    await assert.rejects(
+      consumeMigrationEvaluationApproval(store, manifestEvidenceId, {
+        async sync_directory() {
+          syncCalls += 1;
+          if (syncCalls === 2) {
+            throw Object.assign(new Error("directory sync failed"), { code: "EIO" });
+          }
+        },
+      }),
+      /Unable to consume approval manifest/,
+    );
+    assert.equal(syncCalls, 2, "the marker file and its containing directory must be flushed");
+    await assert.rejects(
+      consumeMigrationEvaluationApproval(store, manifestEvidenceId),
+      ApprovalAlreadyConsumedError,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("run_migration_evaluation consumes approval before provider work and rejects replay", async () => {
   const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-replay-"));
   try {

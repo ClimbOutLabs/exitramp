@@ -1094,6 +1094,26 @@ export async function prepareMigrationEvaluationApproval(
 
 const APPROVAL_CONSUMPTION_DIRECTORY = ".migration-evaluation-approval-consumption";
 
+interface ApprovalConsumptionOptions {
+  /** Test seam for proving fail-closed directory-durability behavior. */
+  sync_directory?: (directory: string) => Promise<void>;
+}
+
+async function syncDirectoryForDurability(directory: string): Promise<void> {
+  if (process.platform === "win32") {
+    // Node directory handles return EPERM from fsync on Windows. The marker's
+    // FileHandle.sync() maps to FlushFileBuffers, which flushes file metadata;
+    // POSIX additionally requires an explicit directory fsync for the name.
+    return;
+  }
+  const directoryHandle = await open(directory, "r");
+  try {
+    await directoryHandle.sync();
+  } finally {
+    await directoryHandle.close();
+  }
+}
+
 /**
  * Atomically consume an approval before any provider adapter is constructed.
  *
@@ -1107,6 +1127,7 @@ const APPROVAL_CONSUMPTION_DIRECTORY = ".migration-evaluation-approval-consumpti
 export async function consumeMigrationEvaluationApproval(
   store: EvidenceStore,
   manifestEvidenceId: string,
+  options?: ApprovalConsumptionOptions,
 ): Promise<void> {
   const parsedEvidenceId = EvidenceIdSchema.parse(manifestEvidenceId);
   const markerDirectory = join(store.directory, APPROVAL_CONSUMPTION_DIRECTORY);
@@ -1114,7 +1135,12 @@ export async function consumeMigrationEvaluationApproval(
     markerDirectory,
     `${parsedEvidenceId.slice("sha256:".length)}.consumed`,
   );
-  await mkdir(markerDirectory, { recursive: true });
+  const syncDirectory = options?.sync_directory ?? syncDirectoryForDurability;
+  const createdDirectory = await mkdir(markerDirectory, { recursive: true });
+  if (createdDirectory !== undefined) {
+    // Persist the newly created marker-directory entry before relying on it.
+    await syncDirectory(store.directory);
+  }
 
   let markerHandle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -1129,6 +1155,7 @@ export async function consumeMigrationEvaluationApproval(
     // Ensure the claim is durable before provider work starts.  If this fails,
     // the marker remains and the safe outcome is still to reject later replay.
     await markerHandle.sync();
+    await syncDirectory(markerDirectory);
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       throw new ApprovalAlreadyConsumedError(parsedEvidenceId);
