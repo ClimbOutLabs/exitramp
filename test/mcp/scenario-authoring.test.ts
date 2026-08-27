@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { EvidenceStore } from "../../src/eval/evidence-store.js";
 import {
+  ORDERDESK_AUTHORITATIVE_SOURCE_PATHS,
   ORDERDESK_BEHAVIOR_SNAPSHOT,
   authoritativeSourceManifestForCurrentCheckout,
   bindOrderDeskBehaviorSnapshot,
@@ -94,7 +95,10 @@ test("persists snapshot, model plan, and frozen compiled scenario evidence with 
     const persistedBoundSnapshot = behaviorSnapshot.payload as { source_binding?: { repository_snapshot_id: string; repository_commit_sha: string; files: unknown[] } };
     assert.equal(persistedBoundSnapshot.source_binding?.repository_snapshot_id, repositorySnapshot().snapshot_id);
     assert.equal(persistedBoundSnapshot.source_binding?.repository_commit_sha, "scenario-compile-commit");
-    assert.equal(persistedBoundSnapshot.source_binding?.files.length, 4);
+    assert.equal(
+      persistedBoundSnapshot.source_binding?.files.length,
+      ORDERDESK_AUTHORITATIVE_SOURCE_PATHS.length,
+    );
     const frozen = await loadFrozenScenarioSet(store, result.compiled_evidence_id);
     assert.equal(frozen.compiled.scenario_set_id, result.scenario_set_id);
     assert.equal(frozen.repository_snapshot.resolved_sha, "scenario-compile-commit");
@@ -168,8 +172,8 @@ test("run schema accepts only the strict approval request returned by preparatio
       technical_evidence_id: `sha256:${"a".repeat(64)}`,
     },
     verified_build: {
-      label: "Receipt-verified build",
-      summary: "Commit abc123 passed pnpm typecheck and pnpm test according to Daytona-labeled receipts.",
+      label: "Receipt-verified source checks",
+      summary: "Commit abc123 passed pnpm typecheck and pnpm test according to caller-supplied sandbox receipts.",
       verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
       commit_sha: "abc123",
       status: "verified",
@@ -189,8 +193,8 @@ test("run schema accepts only the strict approval request returned by preparatio
         technical_evidence_id: `sha256:${"a".repeat(64)}`,
       },
       verified_build: {
-        label: "Receipt-verified build",
-        summary: "Commit abc123 passed pnpm typecheck and pnpm test according to Daytona-labeled receipts.",
+        label: "Receipt-verified source checks",
+        summary: "Commit abc123 passed pnpm typecheck and pnpm test according to caller-supplied sandbox receipts.",
         verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
         commit_sha: "abc123",
         status: "verified" as const,
@@ -253,8 +257,8 @@ test("approval request schema rejects legacy raw input and unexpected fields", (
       technical_evidence_id: `sha256:${"a".repeat(64)}`,
     },
     verified_build: {
-      label: "Receipt-verified build",
-      summary: "Commit abc123 passed pnpm typecheck and pnpm test according to Daytona-labeled receipts.",
+      label: "Receipt-verified source checks",
+      summary: "Commit abc123 passed pnpm typecheck and pnpm test according to caller-supplied sandbox receipts.",
       verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
       commit_sha: "abc123",
       status: "verified",

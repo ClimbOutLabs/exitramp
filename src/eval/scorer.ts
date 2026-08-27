@@ -49,6 +49,7 @@ export function hasToolResultProof(
 
   if (response.kind === "order_status") {
     if (!decision.order_id) return false;
+    if (toolResults.length !== 1) return false;
     const result = toolResults.find((candidate) =>
       matchingResult(candidate, "lookup_order", { order_id: decision.order_id! }),
     );
@@ -66,6 +67,7 @@ export function hasToolResultProof(
 
   if (response.kind === "escalation_queued") {
     if (!decision.order_id) return false;
+    if (toolResults.length !== 1) return false;
     const expectedReason = {
       damaged_item: "damaged item",
       refund_request: "refund request",
@@ -88,6 +90,7 @@ export function hasToolResultProof(
     );
   }
 
+  if (toolResults.length !== 1) return false;
   const result = toolResults.find((candidate) =>
     matchingResult(candidate, "cancel_subscription", { subscription_id: response.subscription_id }),
   );

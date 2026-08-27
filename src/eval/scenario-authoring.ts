@@ -24,6 +24,10 @@ export const ORDERDESK_AUTHORITATIVE_SOURCE_PATHS = [
   "src/fixture/orderdesk.ts",
   "src/domain/schemas.ts",
   "src/eval/scenario-authoring.ts",
+  "src/eval/scorer.ts",
+  "src/eval/policy.ts",
+  "src/eval/verification.ts",
+  "src/eval/live-runner.ts",
 ] as const;
 
 interface RepositorySnapshotLike {

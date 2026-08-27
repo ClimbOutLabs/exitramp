@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title description">
   <title id="title">ExitRamp evidence and approval workflow</title>
-  <desc id="description">A GitHub commit becomes a bound scenario suite and verified build. TrueForge pauses for human approval before paid model evaluation. ExitRamp then calculates a deterministic verdict and stores the evidence.</desc>
+  <desc id="description">A GitHub commit becomes a bound scenario suite with receipt-verified source checks. TrueForge pauses for human approval before paid model evaluation. ExitRamp then calculates a deterministic verdict and stores the evidence.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
       <path d="M0 0L10 5L0 10Z" fill="#94A3B8"/>
@@ -33,7 +33,7 @@
     <circle cx="508" cy="180" r="16" fill="#111827"/>
     <text x="508" y="186" text-anchor="middle" fill="#FFFFFF" font-size="15" font-weight="700">3</text>
     <text x="502" y="225" fill="#111827" font-size="18" font-weight="700">Verify</text>
-    <text x="502" y="253" fill="#64748B" font-size="15">Sandbox build</text>
+    <text x="502" y="253" fill="#64748B" font-size="15">Source-check</text>
     <text x="502" y="276" fill="#64748B" font-size="15">receipts</text>
 
     <path d="M650 221h36" stroke="#F59E0B" stroke-width="3" marker-end="url(#arrow)"/>

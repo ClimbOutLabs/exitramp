@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { mkdir, open } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -134,6 +136,23 @@ export type MigrationEvaluationApprovalRequest = z.infer<
 >;
 export const ApprovalRequestSchema = MigrationEvaluationApprovalRequestSchema;
 
+/**
+ * An approval manifest may authorize exactly one paid evaluation.  This is
+ * deliberately a distinct error so callers can explain that a fresh
+ * approval is required instead of retrying the same request.
+ */
+export class ApprovalAlreadyConsumedError extends Error {
+  readonly error_code = "APPROVAL_ALREADY_CONSUMED" as const;
+
+  constructor(public readonly manifest_evidence_id: string) {
+    super(
+      `Approval manifest ${manifest_evidence_id} has already been consumed; ` +
+        "prepare a new approval before another paid evaluation.",
+    );
+    this.name = "ApprovalAlreadyConsumedError";
+  }
+}
+
 export const PrepareMigrationEvaluationApprovalInputSchema = z.object({
   baseline_target: ModelTargetIdSchema,
   candidate_target: ModelTargetIdSchema,
@@ -181,7 +200,10 @@ const VerificationReportPayloadSchema = z.object({
 const EvaluationErrorSchema = z.object({
   status: z.literal("error"),
   reason: z.literal("provider evaluation failed"),
-  error: z.object({ name: z.string(), message: z.string() }).strict(),
+  error: z.object({
+    name: z.string().min(1).max(200),
+    message: z.string().max(2_000),
+  }).strict(),
   scenario_set_id: z.string().min(1),
   repository_snapshot_evidence_id: EvidenceIdSchema,
   commit_sha: z.string().min(1),
@@ -463,16 +485,12 @@ function scenarioSuiteReference(evidenceId: string, caseCount: number): Scenario
 const STRUCTURAL_RECEIPT_VERIFICATION_SCOPE =
   "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.";
 
-function sandboxReceiptSource(sandboxId: string | undefined): "Daytona-labeled receipts" | "sandbox receipts" {
-  return /^v1:daytona:/i.test(sandboxId ?? "") ? "Daytona-labeled receipts" : "sandbox receipts";
-}
-
 function verifiedBuildReference(report: VerificationReport, evidenceId: string): VerifiedBuildReference {
-  const receiptSource = sandboxReceiptSource(report.sandbox_id);
+  const receiptSource = "caller-supplied sandbox receipts";
   const commands = report.command_plan.map((command) => command.command).join(" and ");
   const verified = report.status === "verified";
   return {
-    label: verified ? "Receipt-verified build" : "Receipt checks did not pass",
+    label: verified ? "Receipt-verified source checks" : "Receipt checks did not pass",
     summary: verified
       ? `Commit ${report.expected_commit_sha} passed ${commands} according to ${receiptSource}.`
       : `Commit ${report.expected_commit_sha} did not pass ${commands} according to ${receiptSource}.`,
@@ -1074,6 +1092,53 @@ export async function prepareMigrationEvaluationApproval(
   };
 }
 
+const APPROVAL_CONSUMPTION_DIRECTORY = ".migration-evaluation-approval-consumption";
+
+/**
+ * Atomically consume an approval before any provider adapter is constructed.
+ *
+ * EvidenceStore.write is intentionally idempotent for immutable evidence, so
+ * it cannot act as a claim: concurrent writers would both observe the same
+ * successful write.  An exclusive marker is therefore used as the durable
+ * one-shot claim.  The marker is created with O_EXCL (wx), which is atomic
+ * across concurrent requests and server processes sharing this store.  A
+ * crash after marker creation fails closed: an approval is never replayed.
+ */
+export async function consumeMigrationEvaluationApproval(
+  store: EvidenceStore,
+  manifestEvidenceId: string,
+): Promise<void> {
+  const parsedEvidenceId = EvidenceIdSchema.parse(manifestEvidenceId);
+  const markerDirectory = join(store.directory, APPROVAL_CONSUMPTION_DIRECTORY);
+  const markerPath = join(
+    markerDirectory,
+    `${parsedEvidenceId.slice("sha256:".length)}.consumed`,
+  );
+  await mkdir(markerDirectory, { recursive: true });
+
+  let markerHandle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    markerHandle = await open(markerPath, "wx", 0o600);
+    await markerHandle.writeFile(
+      JSON.stringify({
+        manifest_evidence_id: parsedEvidenceId,
+        consumed_at: new Date().toISOString(),
+      }),
+      "utf8",
+    );
+    // Ensure the claim is durable before provider work starts.  If this fails,
+    // the marker remains and the safe outcome is still to reject later replay.
+    await markerHandle.sync();
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new ApprovalAlreadyConsumedError(parsedEvidenceId);
+    }
+    throw new Error(`Unable to consume approval manifest ${parsedEvidenceId}`, { cause: error });
+  } finally {
+    await markerHandle?.close();
+  }
+}
+
 /** Load and completely re-derive a paid-run request from immutable evidence. */
 export async function loadMigrationEvaluationApproval(
   store: EvidenceStore,
@@ -1145,7 +1210,7 @@ export function renderApprovalMarkdown(request: MigrationEvaluationApprovalReque
     `- Workload: ${manifest.workload.baseline_trials} baseline trials + conditional ${manifest.workload.candidate_trials_if_baseline_passes} candidate trials (${manifest.workload.maximum_trials} maximum trials)`,
     `- Provider request bound: at most ${manifest.workload.maximum_provider_requests} requests`,
     `- Suite: ${manifest.scenario_suite.label} (${manifest.workload.cases} cases × ${manifest.workload.trials_per_case} trials each)`,
-    `- Build: ${manifest.verified_build.label} at commit ${manifest.commit_sha}`,
+    `- Source checks: ${manifest.verified_build.label} at commit ${manifest.commit_sha}`,
     `- Receipt scope: ${manifest.verified_build.verification_scope}`,
     `- Billing: ${manifest.billing_notice}`,
     `- Data impact: ${manifest.data_impact}`,
@@ -1195,7 +1260,7 @@ export function renderEvaluationErrorMarkdown(evaluationEvidenceId: string): str
 
 export function buildMcpServer(options: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: "exitramp", version: "0.1.0" });
-  const evidenceStore = options.evidence_store ?? new EvidenceStore({ directory: ".exitramp/evidence" });
+  const evidenceStore = options.evidence_store ?? new EvidenceStore({});
 
   server.registerTool(
     "repo_snapshot",
@@ -1216,7 +1281,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async ({ owner, repository, ref }) => {
-      const token = process.env.GITHUB_TOKEN;
+      const token = githubTokenForRepository(owner, repository);
       const snapshot = await snapshotRepository(
         owner,
         repository,
@@ -1340,6 +1405,10 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
     },
     async ({ approval_request }) => {
       const approval = await loadMigrationEvaluationApproval(evidenceStore, approval_request);
+      // Consume the human approval before constructing an adapter or making
+      // the first provider request. This remains consumed on every terminal
+      // outcome, including provider failures, so retries cannot spend twice.
+      await consumeMigrationEvaluationApproval(evidenceStore, approval.request.manifest_evidence_id);
       const { manifest, evidence: evaluationEvidence } = approval;
       const { frozen, verificationLink } = evaluationEvidence;
       const { report: verification } = verificationLink;
@@ -1429,6 +1498,32 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
   );
 
   return server;
+}
+
+const REPOSITORY_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * Never lend the process GitHub token to an arbitrary caller-named repository.
+ * Repositories outside the explicit allowlist are fetched without credentials,
+ * which still permits public snapshots without exposing private-repo access.
+ */
+export function githubTokenForRepository(
+  owner: string,
+  repository: string,
+  token = process.env.GITHUB_TOKEN,
+  allowedRepositories = process.env.EXITRAMP_ALLOWED_REPOS,
+): string | undefined {
+  if (!token || !allowedRepositories) return undefined;
+  const allowed = new Set(
+    allowedRepositories.split(",").map((entry) => {
+      const normalized = entry.trim().toLowerCase();
+      if (!REPOSITORY_NAME.test(normalized)) {
+        throw new Error("EXITRAMP_ALLOWED_REPOS must contain comma-separated owner/repository names");
+      }
+      return normalized;
+    }),
+  );
+  return allowed.has(`${owner}/${repository}`.toLowerCase()) ? token : undefined;
 }
 
 const mcpHandler = createMcpHandler(() => buildMcpServer());

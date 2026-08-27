@@ -11,6 +11,7 @@
   "packageManager": "pnpm@11.19.0",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "demo:approval": "tsx src/demo/approval.ts",
     "demo:local": "tsx src/demo/local.ts",
     "mcp": "tsx src/mcp/server.ts",
     "test": "tsx --test test/**/*.test.ts",
