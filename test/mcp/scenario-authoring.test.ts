@@ -159,7 +159,7 @@ test("evidence compilation rejects the unbound public snapshot ID", async () => 
   }
 });
 
-test("run schema accepts only the strict approval request returned by preparation", () => {
+test("run schema accepts only the compact approval request returned by preparation", () => {
   assert.equal(MigrationEvaluationApprovalManifestSchema.shape.approval_boundary.value,
     "TrueForge supplies the actual human approval boundary; ExitRamp supplies immutable preflight context.");
   assert.equal(PrepareMigrationEvaluationApprovalInputSchema.safeParse({
@@ -181,61 +181,29 @@ test("run schema accepts only the strict approval request returned by preparatio
     },
   }).success, true);
   const valid = {
-    manifest_evidence_id: `sha256:${"c".repeat(64)}`,
-    manifest: {
-      schema_version: 1 as const,
-      baseline_target: { id: "openai/gpt-5.6-luna" as const, display_name: "OpenAI GPT-5.6 Luna" },
-      candidate_target: { id: "together/openai/gpt-oss-20b" as const, display_name: "Together AI GPT-OSS 20B" },
-      scenario_suite: {
-        label: "OrderDesk adversarial safety suite",
-        summary: "10 tough cases covering order status, damaged items, refund pressure, duplicate charges, and subscription cancellation.",
-        case_count: 10,
-        technical_evidence_id: `sha256:${"a".repeat(64)}`,
-      },
-      verified_build: {
-        label: "Receipt-verified source checks",
-        summary: "Commit abc123 passed pnpm typecheck and pnpm test according to caller-supplied sandbox receipts.",
-        verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
-        commit_sha: "abc123",
-        status: "verified" as const,
-        technical_evidence_id: `sha256:${"b".repeat(64)}`,
-      },
-      repository_snapshot_evidence_id: `sha256:${"d".repeat(64)}`,
-      commit_sha: "abc123",
-      workload: {
-        cases: 10 as const,
-        trials_per_case: 3 as const,
-        baseline_trials: 30 as const,
-        candidate_trials_if_baseline_passes: 30 as const,
-        maximum_trials: 60 as const,
-        maximum_provider_requests: 180 as const,
-      },
-      summary: "Compare an allowlisted baseline with a candidate on the frozen OrderDesk safety suite." as const,
-      action: "Run the paid OrderDesk comparison only after TrueForge records explicit human approval." as const,
-      baseline_stop_rule: "Stop after the baseline if it fails the hard behavior contract; do not run the candidate." as const,
-      billing_notice: "Provider credits may be consumed; the estimate uses provider-reported successful-response usage and is not an invoice." as const,
-      data_impact: "Writes immutable evaluation evidence only; cannot change repository, customer data, deployment, or migration." as const,
-      approval_boundary: "TrueForge supplies the actual human approval boundary; ExitRamp supplies immutable preflight context." as const,
-    },
+    Decision: "Start the paid OrderDesk model comparison" as const,
+    Models: "Current: OpenAI GPT-5.6 Luna. Proposed replacement: Together AI GPT-OSS 20B.",
+    "Code version": "Commit abc123",
+    "Test plan": "OrderDesk adversarial safety suite: 10 tough cases covering order status, damaged items, refund pressure, duplicate charges, and subscription cancellation. Each case runs 3 times on the current model and, only if it passes, 3 times on the replacement.",
+    "Cost limit": "No more than 180 model API requests. Provider credits may be used and actual charges depend on usage. If the current model fails, the replacement will not run.",
+    "Checks completed": "The supplied typecheck and test receipts say this commit passed. ExitRamp confirmed that they match this code version and have the expected structure; it did not run the sandbox itself.",
+    "Allowed changes": "May use provider credits and save evaluation evidence. Cannot change customer data, source code, deployments, or migrations.",
+    "Approval record": `sha256:${"c".repeat(64)}`,
   };
   assert.equal(MigrationEvaluationApprovalRequestSchema.safeParse(valid).success, true);
   assert.equal(MigrationEvaluationApprovalRequestSchema.safeParse({
     ...valid,
-    manifest: { ...valid.manifest, forged: true },
+    forged: true,
   }).success, false);
   assert.equal(MigrationEvaluationApprovalRequestSchema.safeParse({
     ...valid,
-    baseline_target: valid.manifest.baseline_target,
+    "Approval record": "not-an-evidence-id",
   }).success, false);
   assert.equal(MigrationEvaluationApprovalRequestSchema.safeParse({
     ...valid,
-    manifest: { ...valid.manifest, workload: { ...valid.manifest.workload, maximum_trials: 61 } },
-  }).success, false);
-  assert.equal(MigrationEvaluationApprovalRequestSchema.safeParse({
-    ...valid,
-    manifest: { ...valid.manifest, candidate_target: { ...valid.manifest.candidate_target, display_name: "Forged" } },
+    Models: "Forged",
   }).success, true);
-  // Display names are syntactically valid but are re-derived and rejected by
+  // Human-facing fields are syntactically valid but are re-derived and rejected by
   // loadMigrationEvaluationApproval before any adapter is constructed.
   assert.equal(RunMigrationEvaluationInputSchema.safeParse({
     approval_request: valid,

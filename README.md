@@ -51,10 +51,9 @@ See pics below.
 
 ### Human approval before the paid run
 
-![A real TrueForge approval card pausing the ExitRamp model comparison with Allow and Deny controls.](docs/assets/trueforge-approval.png)
-
-*TrueForge keeps the paid comparison stopped until a reviewer chooses Allow or
-Deny.*
+TrueForge keeps the paid comparison stopped until a reviewer sees the models,
+code version, test plan, cost limit, and permitted effects, then chooses Allow
+or Deny.
 
 ### See the migration decision
 
