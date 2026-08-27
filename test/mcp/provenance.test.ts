@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { EvidenceStore } from "../../src/eval/evidence-store.js";
+import { EvidenceStore, type EvidenceEnvelope, type EvidenceWriteInput } from "../../src/eval/evidence-store.js";
 import { runMigrationComparison } from "../../src/eval/live-runner.js";
 import {
   RecordSandboxVerificationInputSchema,
@@ -39,6 +39,18 @@ import {
 
 const COMMIT = "commit-sha";
 const HASH = "a".repeat(64);
+
+class FailingCompletedEvaluationStore extends EvidenceStore {
+  readonly attemptedArtifactTypes: string[] = [];
+
+  override async write(input: EvidenceWriteInput): Promise<EvidenceEnvelope> {
+    this.attemptedArtifactTypes.push(input.artifact_type);
+    if (input.artifact_type === "migration-evaluation") {
+      throw new Error("completed evaluation evidence persistence failed");
+    }
+    return super.write(input);
+  }
+}
 
 function assertBoundedPrimaryOutput(value: unknown): void {
   const serialized = JSON.stringify(value);
@@ -764,6 +776,57 @@ test("MCP persists failed paid evaluation accounting with the completed baseline
       approval_manifest_evidence_id: approval.result.approval_request.manifest_evidence_id,
       attempt_accounting: accounting,
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("MCP propagates completed-evaluation persistence failures without recording provider failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-evaluation-persistence-error-"));
+  try {
+    const store = new FailingCompletedEvaluationStore({
+      directory,
+      now: () => new Date("2026-08-25T12:00:00.000Z"),
+    });
+    const repository = await persistRepositorySnapshot(store, snapshot());
+    const verification = await persistSandboxVerification(
+      store,
+      repository.repository_snapshot_evidence_id,
+      receipts(),
+    );
+    const compiled = await compileScenarioPlanWithEvidence(
+      store,
+      repository.repository_snapshot_evidence_id,
+      boundScenarioPlan(snapshot()),
+    );
+    const approval = await prepareMigrationEvaluationApproval(store, {
+      baseline_target: "openai/gpt-5.6-luna",
+      candidate_target: "together/openai/gpt-oss-20b",
+      scenario_suite: compiled.scenario_suite,
+      verified_build: verification.verified_build,
+    });
+    const server = buildMcpServer({
+      evidence_store: store,
+      invoker: {
+        async invokeCase(_target, testCase) {
+          return passingObservation(testCase);
+        },
+      },
+    });
+    const registeredTools = (server as unknown as {
+      _registeredTools: Record<string, {
+        handler: (input: unknown) => Promise<{ structuredContent?: unknown }>;
+      }>;
+    })._registeredTools;
+
+    await assert.rejects(
+      registeredTools.run_migration_evaluation!.handler({
+        approval_request: approval.result.approval_request,
+      }),
+      /completed evaluation evidence persistence failed/,
+    );
+    assert.equal(store.attemptedArtifactTypes.at(-1), "migration-evaluation");
+    assert.equal(store.attemptedArtifactTypes.includes("evaluation-error"), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

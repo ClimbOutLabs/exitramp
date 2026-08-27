@@ -22,11 +22,20 @@ export interface EvidenceWriteInput {
   created_at?: string;
 }
 
+export interface EvidenceCleanupDiagnostic {
+  code: string;
+  publication_committed: boolean;
+}
+
 export interface EvidenceStoreOptions {
   directory?: string;
   now?: () => Date;
   /** Test seam for pausing between complete temp-file write and publication. */
   before_publish?: () => void | Promise<void>;
+  /** Receives sanitized non-ENOENT temporary-file cleanup failures. */
+  on_cleanup_error?: (diagnostic: EvidenceCleanupDiagnostic) => void | Promise<void>;
+  /** Test seam for forcing temporary-file cleanup failures deterministically. */
+  unlink_temporary?: (temporaryPath: string) => Promise<void>;
 }
 
 export class EvidenceNotFoundError extends Error {
@@ -63,6 +72,13 @@ export class EvidenceAtomicPublicationUnsupportedError extends Error {
 function atomicPublicationUnsupported(error: unknown): error is NodeJS.ErrnoException {
   return ["EPERM", "EXDEV", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EINVAL"].includes(
     (error as NodeJS.ErrnoException).code ?? "",
+  );
+}
+
+function reportCleanupError(diagnostic: EvidenceCleanupDiagnostic): void {
+  console.warn(
+    `EvidenceStore temporary cleanup failed (code=${diagnostic.code}, ` +
+      `publication_committed=${diagnostic.publication_committed})`,
   );
 }
 
@@ -174,12 +190,18 @@ export class EvidenceStore {
   private readonly directoryPath: string;
   private readonly clock: () => Date;
   private readonly beforePublish: (() => void | Promise<void>) | undefined;
+  private readonly onCleanupError:
+    | ((diagnostic: EvidenceCleanupDiagnostic) => void | Promise<void>)
+    | undefined;
+  private readonly unlinkTemporary: (temporaryPath: string) => Promise<void>;
 
   constructor(options?: EvidenceStoreOptions | string) {
     const normalized = typeof options === "string" ? { directory: options } : options;
     this.directoryPath = evidenceDirectory(normalized?.directory);
     this.clock = normalized?.now ?? (() => new Date());
     this.beforePublish = normalized?.before_publish;
+    this.onCleanupError = normalized?.on_cleanup_error ?? reportCleanupError;
+    this.unlinkTemporary = normalized?.unlink_temporary ?? unlink;
   }
 
   get directory(): string {
@@ -216,6 +238,7 @@ export class EvidenceStore {
       `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
     );
     let temporaryCreated = false;
+    let publicationCommitted = false;
     try {
       const handle = await open(temporaryPath, "wx");
       temporaryCreated = true;
@@ -239,17 +262,35 @@ export class EvidenceStore {
         if (canonicalJson(existing) !== bytes) {
           throw new EvidenceIntegrityError(`Existing evidence artifact differs: ${evidenceId}`);
         }
+        publicationCommitted = true;
         return existing;
       }
+      publicationCommitted = true;
       return envelope;
     } finally {
       // A successful link leaves the temporary name as a second hard link;
       // failed writes must not leave either a visible partial artifact or a
       // stale temporary file behind.
       if (temporaryCreated) {
-        await unlink(temporaryPath).catch((error: unknown) => {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        });
+        try {
+          await this.unlinkTemporary(temporaryPath);
+        } catch (error: unknown) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            // Cleanup is best effort. Never replace a committed write or the
+            // primary write/publication error with a diagnostic failure. The
+            // callback receives only a sanitized diagnostic, never evidence
+            // bytes, identifiers, or filesystem paths.
+            try {
+              const code = (error as NodeJS.ErrnoException).code;
+              await this.onCleanupError?.({
+                code: typeof code === "string" ? code : "UNKNOWN",
+                publication_committed: publicationCommitted,
+              });
+            } catch {
+              // Diagnostics must not change write semantics either.
+            }
+          }
+        }
       }
     }
   }

@@ -182,3 +182,64 @@ test("EvidenceStore leaves no artifact when serialization fails before publicati
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("EvidenceStore keeps a successful publication successful when cleanup fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-evidence-"));
+  const cleanupError = Object.assign(new Error("temporary cleanup failed"), { code: "EACCES" });
+  const cleanupDiagnostics: unknown[] = [];
+  try {
+    const store = new EvidenceStore({
+      directory,
+      unlink_temporary: async () => {
+        throw cleanupError;
+      },
+      on_cleanup_error: (diagnostic) => {
+        cleanupDiagnostics.push(diagnostic);
+      },
+    });
+
+    const written = await store.write({
+      artifact_type: "evaluation",
+      created_at: "2026-08-25T12:00:00.000Z",
+      payload: { score: 1 },
+    });
+
+    assert.deepEqual(await store.read(written.evidence_id), written);
+    assert.deepEqual(cleanupDiagnostics, [{ code: "EACCES", publication_committed: true }]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("EvidenceStore preserves the primary write error when cleanup also fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-evidence-"));
+  const primaryError = new Error("publication failed");
+  const cleanupError = Object.assign(new Error("temporary cleanup failed"), { code: "EACCES" });
+  const cleanupDiagnostics: unknown[] = [];
+  try {
+    const store = new EvidenceStore({
+      directory,
+      before_publish: () => {
+        throw primaryError;
+      },
+      unlink_temporary: async () => {
+        throw cleanupError;
+      },
+      on_cleanup_error: (diagnostic) => {
+        cleanupDiagnostics.push(diagnostic);
+      },
+    });
+
+    await assert.rejects(
+      store.write({
+        artifact_type: "evaluation",
+        created_at: "2026-08-25T12:00:00.000Z",
+        payload: { score: 1 },
+      }),
+      (error: unknown) => error === primaryError,
+    );
+    assert.deepEqual(cleanupDiagnostics, [{ code: "EACCES", publication_committed: false }]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

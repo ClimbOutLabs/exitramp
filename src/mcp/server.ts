@@ -1343,63 +1343,18 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       const { manifest, evidence: evaluationEvidence } = approval;
       const { frozen, verificationLink } = evaluationEvidence;
       const { report: verification } = verificationLink;
+      let comparison: Awaited<ReturnType<typeof runMigrationComparison>>;
       try {
-        const comparison = await runMigrationComparison(
+        comparison = await runMigrationComparison(
           manifest.baseline_target.id,
           manifest.candidate_target.id,
           options.invoker ?? new LiveOrderDeskAdapter(),
           frozen.compiled.cases,
           verification,
         );
-        if (comparison.kind === "baseline_rejected") {
-          const terminal = await persistBaselineRejectedEvaluation(evidenceStore, {
-            scenario_evidence_id: frozen.envelope.evidence_id,
-            verification_evidence_id: verificationLink.envelope.evidence_id,
-            approval_manifest_evidence_id: approval.request.manifest_evidence_id,
-            scenario_set_id: frozen.compiled.scenario_set_id,
-            repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
-            commit_sha: verificationLink.snapshot.resolved_sha,
-            case_count: frozen.compiled.cases.length,
-            scenario_suite: evaluationEvidence.scenario_suite,
-            verified_build: evaluationEvidence.verified_build,
-            baseline_failure: comparison,
-          });
-          const result = buildEvaluationPrimaryResponse(
-            terminal.payload.human_report,
-            terminal.envelope.evidence_id,
-          );
-          return {
-            content: [{ type: "text", text: renderEvaluationMarkdown(result) }],
-            structuredContent: result,
-          };
-        }
-        const evaluationArtifact = await persistCompletedMigrationEvaluation(evidenceStore, {
-          scenario_evidence_id: frozen.envelope.evidence_id,
-          verification_evidence_id: verificationLink.envelope.evidence_id,
-          approval_manifest_evidence_id: approval.request.manifest_evidence_id,
-          scenario_set_id: frozen.compiled.scenario_set_id,
-          repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
-          commit_sha: verificationLink.snapshot.resolved_sha,
-          case_count: frozen.compiled.cases.length,
-          scenario_suite: evaluationEvidence.scenario_suite,
-          verified_build: evaluationEvidence.verified_build,
-          comparison,
-        });
-        const result = buildEvaluationPrimaryResponse(
-          evaluationArtifact.payload.human_report,
-          evaluationArtifact.envelope.evidence_id,
-        );
-        return {
-          content: [{ type: "text", text: renderEvaluationMarkdown(result) }],
-          structuredContent: result,
-        };
       } catch (error) {
-        const reportedError = error instanceof ModelEvaluationError
-          ? error.original_error
-          : {
-              name: error instanceof Error ? error.name : "UnknownError",
-              message: error instanceof Error ? error.message : String(error),
-            };
+        if (!(error instanceof ModelEvaluationError)) throw error;
+        const reportedError = error.original_error;
         const errorPayload = EvaluationErrorSchema.parse({
           status: "error",
           reason: "provider evaluation failed",
@@ -1428,6 +1383,48 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
           structuredContent: result,
         };
       }
+      if (comparison.kind === "baseline_rejected") {
+        const terminal = await persistBaselineRejectedEvaluation(evidenceStore, {
+          scenario_evidence_id: frozen.envelope.evidence_id,
+          verification_evidence_id: verificationLink.envelope.evidence_id,
+          approval_manifest_evidence_id: approval.request.manifest_evidence_id,
+          scenario_set_id: frozen.compiled.scenario_set_id,
+          repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
+          commit_sha: verificationLink.snapshot.resolved_sha,
+          case_count: frozen.compiled.cases.length,
+          scenario_suite: evaluationEvidence.scenario_suite,
+          verified_build: evaluationEvidence.verified_build,
+          baseline_failure: comparison,
+        });
+        const result = buildEvaluationPrimaryResponse(
+          terminal.payload.human_report,
+          terminal.envelope.evidence_id,
+        );
+        return {
+          content: [{ type: "text", text: renderEvaluationMarkdown(result) }],
+          structuredContent: result,
+        };
+      }
+      const evaluationArtifact = await persistCompletedMigrationEvaluation(evidenceStore, {
+        scenario_evidence_id: frozen.envelope.evidence_id,
+        verification_evidence_id: verificationLink.envelope.evidence_id,
+        approval_manifest_evidence_id: approval.request.manifest_evidence_id,
+        scenario_set_id: frozen.compiled.scenario_set_id,
+        repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
+        commit_sha: verificationLink.snapshot.resolved_sha,
+        case_count: frozen.compiled.cases.length,
+        scenario_suite: evaluationEvidence.scenario_suite,
+        verified_build: evaluationEvidence.verified_build,
+        comparison,
+      });
+      const result = buildEvaluationPrimaryResponse(
+        evaluationArtifact.payload.human_report,
+        evaluationArtifact.envelope.evidence_id,
+      );
+      return {
+        content: [{ type: "text", text: renderEvaluationMarkdown(result) }],
+        structuredContent: result,
+      };
     },
   );
 
