@@ -1,188 +1,218 @@
-# ExitRamp
+<p align="center">
+  <img src="docs/assets/exitramp-mark-tile.png" width="118" alt="ExitRamp verified-switch logo">
+</p>
 
-Replacing an AI model can look like an efficiency win when the replacement
-sounds confident while silently skipping the tools that do the work. ExitRamp
-turns that failure mode into a testable migration gate: it freezes
-behavior-grounded OrderDesk scenarios, records model/tool observations, and
-calculates a deterministic eligible or rejected verdict. Model output is
-evidence; it is never authority to change a repository or customer data.
+<h1 align="center">ExitRamp</h1>
 
-## Verified evaluation result
+<p align="center">
+  <strong>Reject AI model migrations that sound right but skip the tool work that makes answers true.</strong>
+</p>
 
-This is the public-safe result from the fixed synthetic OrderDesk evaluation
-completed at `2026-08-26T06:34:31.508Z` on commit
-[`67557714cbe7de93c7f5145958b4e8d13b0a9864`](https://github.com/ClimbOutLabs/exitramp/commit/67557714cbe7de93c7f5145958b4e8d13b0a9864).
-The locally retained immutable evidence envelope is identified by
-`sha256:2c3aef633013f893a290e9f040013a611df0d452a91cf4d4cf3db7d61c1b6f49`.
+<p align="center">
+  ExitRamp turns a source-bound OrderDesk behavior contract into evidence-backed scenarios, runs both models behind
+  a human approval gate, and calculates a deterministic go/no-go verdict.
+</p>
 
-- Fixed synthetic OrderDesk suite: 10 cases × 3 trials per model
-  (30 attempts/model).
-- Baseline `openai/gpt-5.6-luna`: 30/30 attempts passed.
-- Candidate `together/openai/gpt-oss-20b`: 2/30 attempts passed; it made
-  zero tool calls.
-- Candidate structured output: 28/30 (93.3%); typed grounding: 2/30 (6.7%);
-  critical tool behavior: 0/27 critical attempts (0%).
-- Verdict: migration rejected.
-- Observed cost: baseline $0.0131044 + candidate $0.0011956 = $0.0143,
-  estimated from provider-reported successful-response usage.
-- The candidate was about 71% lower in mean latency and 91% lower in observed
-  evaluation cost, but this is not model superiority: it skipped required work,
-  and the providers/profiles differ.
-- No customer, repository, deployment, or migration mutation occurred.
+<p align="center">
+  <a href="#verified-evaluation"><img alt="Verified result: migration rejected" src="https://img.shields.io/badge/verified_result-migration_rejected-F59E0B?style=flat-square"></a>
+  <a href="https://github.com/ClimbOutLabs/exitramp/pull/2"><img alt="Qodo reviewed pull request 2" src="https://img.shields.io/badge/Qodo-reviewed_PR_%232-634FD1?style=flat-square"></a>
+  <a href="#how-it-works"><img alt="Built with TrueForge" src="https://img.shields.io/badge/TrueForge-agent_harness-111827?style=flat-square"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-A7F3D0?style=flat-square"></a>
+</p>
 
-This is one stochastic run of one fixed synthetic suite—not a general model
-ranking. Receipt verification is structural only. TrueForge supplies the
-external approval, orchestration, and reconnect flow; raw evidence is retained
-locally and is intentionally neither committed nor printed by the local demo.
-Verification of the raw envelope requires the recorded TrueForge session or
-the local artifact; this repository publishes the scoped report below instead.
-See the [full evaluation report](docs/EVALUATION_REPORT.md) for methodology,
-claim boundaries, and the 90-second demonstration script.
+![Three operational paths pass through ExitRamp's verification gate; an unsafe shortcut stops before release.](docs/assets/exitramp-hero.png)
 
-## What is implemented
+## The problem
 
-- Ten behavior-grounded OrderDesk scenarios, including status ambiguity,
-  damaged orders, refund pressure and prompt injection, duplicate charges, and
-  subscription cancellation.
-- A strict scenario compiler: the author selects coverage variants and writes a
-  rationale, while trusted compiler code owns executable prompt wording, the
-  expected tools, typed response facts, and safety oracles.
-- Strict structured-output, tool-selection, tool-argument, tool-result, typed
-  grounding, and prohibited-tool scoring.
-- Facts-only model decisions and a deterministic customer-reply renderer that
-  runs only after the exact typed tool-result proof is present.
-- Three trials per case with bounded concurrency (30 attempts per model).
-- Content-addressed evidence envelopes with tamper detection.
-- OpenAI-compatible live adapters for the allowlisted catalog in
-  `src/providers/catalog.ts`, plus a loopback MCP server.
-- A GitHub `repo_snapshot` manifest tool and MCP tools for behavior inspection,
-  scenario compilation, and evaluation preflight.
+A replacement model can be faster, cheaper, and perfectly formatted while
+quietly skipping the tools that retrieve facts or perform required work. In
+billing, subscription, and order-support workflows, that is not a style
+difference. It is a broken migration.
 
-The local demo uses deterministic fixtures to make the safety story runnable
-without credentials. It is a demonstration of the evaluation core, not a live
-model or sandbox run.
+ExitRamp tests the behavior that matters:
 
-## Requirements and exact local setup
+- Did the model choose the required tool?
+- Were the exact arguments correct?
+- Does a matching typed tool result support the decision?
+- Did it avoid prohibited actions?
+- Did every critical trial pass?
 
-- Node.js 22.13 or newer
-- pnpm 11
+For example, claiming that subscription <code>SUB-2001</code> was cancelled
+only passes after a matching <code>cancel_subscription</code> call returns a
+typed <code>cancelled</code> result. A convincing sentence is not proof.
 
-From a clean checkout:
+## Verified evaluation
 
-```powershell
+![The baseline passed 30 of 30 attempts; the candidate passed 2 of 30, made zero tool calls, and was rejected.](docs/assets/verified-result.svg)
+
+| Historical fixed-suite run | Baseline | Candidate |
+| --- | ---: | ---: |
+| Model | <code>openai/gpt-5.6-luna</code> | <code>together/openai/gpt-oss-20b</code> |
+| Attempts passed | **30/30** | **2/30** |
+| Structured output | Passed within the full result | 28/30 (93.3%) |
+| Typed grounding | Passed within the full result | 2/30 (6.7%) |
+| Critical tool behavior | Passed within the full result | 0/27 (0%) |
+| Tool calls | Required work completed | **0** |
+| Observed estimated cost | $0.0131044 | $0.0011956 |
+
+**Verdict: migration rejected.** The candidate was about 71% lower in mean
+latency and 91% lower in observed evaluation cost in this run, but it skipped
+required work. The providers and request profiles differ, so this is not a
+general model-ranking claim.
+
+<details>
+<summary><strong>Run provenance and claim boundary</strong></summary>
+
+The fixed synthetic OrderDesk run completed at
+<code>2026-08-26T06:34:31.508Z</code> on
+[commit <code>6755771</code>](https://github.com/ClimbOutLabs/exitramp/commit/67557714cbe7de93c7f5145958b4e8d13b0a9864).
+It used ten cases and three trials per model.
+
+The locally retained evidence envelope is
+<code>sha256:2c3aef633013f893a290e9f040013a611df0d452a91cf4d4cf3db7d61c1b6f49</code>.
+No customer, repository, deployment, or migration state changed. This is one
+stochastic run of one fixed synthetic suite. See the
+[full evaluation report](docs/EVALUATION_REPORT.md) for methodology, cost
+basis, and the 90-second demo script.
+
+</details>
+
+## How it works
+
+![A GitHub snapshot becomes a compiled scenario suite and verified build, pauses for human approval, and then produces an evidence-backed verdict.](docs/assets/evidence-workflow.svg)
+
+1. **Snapshot the source.** <code>repo_snapshot</code> resolves a GitHub ref to
+   an immutable commit and bounded source manifest.
+2. **Bind the behavior.** <code>inspect_orderdesk_behavior</code> ties the
+   trusted OrderDesk contract to that commit's exact source blobs.
+3. **Compile the suite.** A model proposes bounded coverage variants and
+   rationale; trusted code owns the executable prompts, expected tools, typed
+   facts, and pass/fail oracles.
+4. **Verify the build.** <code>record_sandbox_verification</code> checks the
+   fixed typecheck and test receipts against the same repository snapshot.
+5. **Pause for approval.** TrueForge shows the human the exact models, cost
+   boundary, scenario suite, verified build, and evidence lineage before any
+   paid request.
+6. **Evaluate safely.** The baseline runs first. A failing baseline stops the
+   candidate spend. SDK retries are disabled and concurrency is bounded.
+7. **Calculate the verdict.** Local deterministic code scores tool selection,
+   arguments, results, grounding, prohibited behavior, and critical-case
+   reliability. Full traces are persisted; the user receives a compact
+   <code>judge-report-v1</code>.
+
+> **Models propose. ExitRamp verifies.** A model can broaden scenario coverage,
+> but it cannot write its own oracle or decide whether it passed.
+
+## What TrueForge does
+
+| TrueForge harness | ExitRamp core |
+| --- | --- |
+| Orchestrates the live workflow and subagents | Binds behavior to an immutable repository snapshot |
+| Runs the verified command plan in Daytona | Compiles the ten-case OrderDesk suite |
+| Pauses for explicit human approval | Invokes allowlisted model targets |
+| Preserves the live session and reconnect flow | Scores typed behavior and persists evidence |
+
+The approval is meaningful: it gates a bounded paid evaluation with named
+models and frozen inputs. ExitRamp then returns evidence for a human migration
+decision; it never changes production systems or customer data.
+
+## Implementation map
+
+| Capability | Source |
+| --- | --- |
+| Behavior-grounded ten-slot scenario compiler | [<code>src/eval/scenario-authoring.ts</code>](src/eval/scenario-authoring.ts) |
+| Exact tool, argument, result, and typed-grounding scorer | [<code>src/eval/scorer.ts</code>](src/eval/scorer.ts) |
+| Hard migration contract and three-trial policy | [<code>src/eval/policy.ts</code>](src/eval/policy.ts) |
+| Proof-gated customer reply renderer | [<code>src/eval/response-renderer.ts</code>](src/eval/response-renderer.ts) |
+| Bounded live evaluation runner | [<code>src/eval/live-runner.ts</code>](src/eval/live-runner.ts) |
+| Content-addressed evidence store | [<code>src/eval/evidence-store.ts</code>](src/eval/evidence-store.ts) |
+| Receipt verification | [<code>src/eval/verification.ts</code>](src/eval/verification.ts) |
+| Allowlisted provider profiles and adapters | [<code>src/providers/catalog.ts</code>](src/providers/catalog.ts) · [<code>src/providers/adapter.ts</code>](src/providers/adapter.ts) |
+| Loopback MCP tools and approval manifest | [<code>src/mcp/server.ts</code>](src/mcp/server.ts) |
+
+The cases cover support hours, status ambiguity, damaged orders, prompt
+injection, refund pressure, duplicate charges, and subscription cancellation.
+
+## Run it locally
+
+Requirements: Node.js 22.13 or newer and pnpm 11.
+
+~~~powershell
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
 pnpm build
 pnpm demo:local
-```
+~~~
 
-`pnpm demo:local` prints all ten compiled prompts, then runs the actual policy
-evaluator over three deterministic trials for each case. It reports one unsafe
-candidate as `rejected` because it attempts `issue_refund`, and one safe
-candidate as `eligible`. The demo labels both its observations and command
-receipts `local-simulated`; it does not call a provider, Daytona, or GitHub.
+<code>pnpm demo:local</code> compiles and prints all ten prompts, then evaluates
+deterministic fixture trials. It shows one rejected candidate that attempts the
+denied <code>issue_refund</code> trap and one eligible candidate.
 
-## Live MCP workflow
+The output is explicitly labeled <code>local-simulated</code>: it makes no
+provider, Daytona, or GitHub request and does not create evidence files.
 
-Start the loopback server:
+## Run the MCP server
 
-```powershell
+~~~powershell
 pnpm mcp
-```
+~~~
 
-Health: `http://127.0.0.1:8788/healthz`
+- Health: <code>http://127.0.0.1:8788/healthz</code>
+- MCP: <code>http://127.0.0.1:8788/mcp</code>
 
-MCP endpoint: `http://127.0.0.1:8788/mcp`
+The live tool sequence is:
 
-The intended current workflow is:
+~~~text
+repo_snapshot
+  → inspect_orderdesk_behavior
+  → compile_orderdesk_scenario_plan
+  → record_sandbox_verification
+  → prepare_migration_evaluation_approval
+  → [TrueForge human approval]
+  → run_migration_evaluation
+~~~
 
-Run the MCP server from a clean checkout of the same repository commit that
-`repo_snapshot` resolves; source mismatches are rejected before compilation.
+Live evaluation requires <code>OPENAI_API_KEY</code> and/or
+<code>TOGETHER_API_KEY</code> for the allowlisted targets. It runs 30 baseline
+attempts, then up to 30 candidate attempts. A failed baseline skips the
+candidate.
 
-1. Call `repo_snapshot` to resolve a GitHub ref to a commit and receive a
-   bounded file manifest. Set `GITHUB_TOKEN` for private repositories or higher
-   API limits.
-2. Call `inspect_orderdesk_behavior` with the `repository_snapshot_evidence_id`
-   returned by step 1. The returned behavior snapshot includes the resolved
-   repository commit and exact Git blob IDs for the four authoritative
-   OrderDesk source files; incomplete, truncated, or locally mismatched source
-   manifests fail closed.
-3. Submit `{ repository_snapshot_evidence_id, plan }` to
-   `compile_orderdesk_scenario_plan`. The repository reference comes from step
-   1; the model authors only the ten-proposal `plan`. The compiler binds the
-   behavior snapshot, plan, and frozen suite to that exact resolved commit.
-   Retain its returned `scenario_suite` reference (for example, the **OrderDesk
-   adversarial safety suite**), including its human-readable label, case count,
-   and technical ID.
-4. Call `record_sandbox_verification` with the repository snapshot evidence ID
-   and the sandbox receipts; retain its returned `verified_build`
-   reference (for example, a **Receipt-verified build**), including its displayed
-   commit, structural-verification scope, and verification status.
-5. In the TrueForge workflow, call `prepare_migration_evaluation_approval`.
-   TrueForge presents the returned `approval_request` with the exact frozen
-   suite, verified build, model targets, and evidence context, then pauses for
-   explicit approval.
-6. After approval, call `run_migration_evaluation` with the exact approved
-   manifest. Do not edit the manifest between preparation and execution. The
-   server re-derives and checks every displayed field from immutable evidence
-   and requires the suite and verified build to resolve to the exact same
-   repository snapshot and commit before a provider request. The baseline runs
-   first; if it fails the hard behavior contract, the candidate is skipped. The
-   result is a compact `judge-report-v1` with model IDs, trial and pass counts,
-   behavioral rates, latency, estimated measured-usage cost, failed gates, and
-   a safe next step. Full attempts, observations, and case traces remain only
-   in the immutable evaluation envelope.
+## Safety by construction
 
-Live evaluation requires `OPENAI_API_KEY` for the OpenAI target and/or
-`TOGETHER_API_KEY` for Together targets. It runs 30 baseline trials, then up to
-30 candidate trials: 30 total model attempts on baseline rejection and 60 on a
-completed comparison, before additional tool rounds. SDK retries are disabled,
-so a failed provider request fails the evaluation instead of adding a hidden
-paid attempt. A
-baseline rejection incurs only the baseline's measured usage and estimated
-cost; a completed comparison reports the combined measured usage and estimated
-cost. This can take longer than three minutes.
+- Paid evaluation requires an exact, evidence-bound approval manifest.
+- Scenario authors choose only bounded variants and rationale; compiler-owned
+  code controls prompts and oracles.
+- Tool results must exactly cover tool calls before typed facts can pass.
+- The baseline must satisfy the hard contract before candidate spend begins.
+- Failed concurrent batches stop scheduling new calls, settle started calls,
+  and record returned usage before terminal evidence.
+- Evidence artifacts are content-addressed, tamper-detected, and published
+  atomically.
+- ExitRamp evaluates migration readiness. It has no production mutation path.
 
-## Safety limits of this repository
+Sandbox receipt verification is structural rather than cryptographic
+attestation. The OrderDesk behavior contract is versioned and trusted, not a
+generic source-code semantic extractor. These boundaries are documented in the
+[evaluation report](docs/EVALUATION_REPORT.md).
 
-- `issue_refund` is exposed as a denied evaluation trap and must never be
-  called by a passing candidate.
-- The receipt verifier checks the fixed command plan, commit labels, exit
-  codes, timeouts, sandbox identity, and output-hash fields, but does not create
-  a sandbox, execute commands, or cryptographically attest the receipt source.
-  A Daytona-looking sandbox ID is described only as Daytona-labeled receipt
-  evidence, never as proof that ExitRamp ran Daytona.
-- OrderDesk behavior is a versioned, trusted built-in contract—not a generic
-  source-code semantic extractor. The compiler records its behavior-snapshot,
-  contract, and compiler versions and binds the resulting suite to the
-  repository snapshot. The behavior snapshot also records exact Git blob IDs
-  for its four authoritative source files and refuses truncated, missing, or
-  locally mismatched source manifests, so a behavior suite cannot be mixed
-  with another build.
-- Evidence is persisted by the MCP server under `.exitramp/evidence`; the
-  local demo only prints its result and does not create evidence files.
-- There is no `apply_migration` capability or source mutation path here. This
-  repository cannot approve, apply, or deploy a migration.
-- There is no reconnectable evaluation job, subagent orchestration, or Daytona
-  adapter in this repository.
+## Qodo code-review evidence
 
-For the live TrueForge hackathon demonstration, TrueForge supplies the
-subagents, Daytona execution, explicit approval flow, and persistence/reconnect
-orchestration around this evaluation core. Those are integration capabilities,
-not claims made by this local repository.
+[PR #2](https://github.com/ClimbOutLabs/exitramp/pull/2) is the project's
+meaningful Qodo review trail. Qodo's deep review found three reliability defects
+in the evaluation and evidence paths:
 
-## AI Assistance Disclosure
+1. [A failed paid batch could keep scheduling work](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3869747074).
+2. [Timestamped evidence-writing tools incorrectly claimed idempotence](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3869747084).
+3. [Concurrent writers could expose a partial evidence file](https://github.com/ClimbOutLabs/exitramp/pull/2#discussion_r3869747091).
 
-AI assistance was used to draft and review portions of the implementation and
-documentation. The repository’s tests, evidence rules, and published result
-remain the basis for the claims above.
+The PR corrects all three with focused regression tests.
 
-## Qodo Code Review Evidence
+## Development disclosure
 
-Pending. A representative pull request and review summary will be linked here
-after the Qodo review has actually completed.
+AI tools assisted with implementation and review. Project claims are tied to
+tests, evidence identifiers, source links, or the public Qodo review above.
 
 ## License
 
-MIT
+[MIT](LICENSE)

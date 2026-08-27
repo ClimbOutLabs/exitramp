@@ -8,6 +8,7 @@ import { EvidenceStore } from "../../src/eval/evidence-store.js";
 import { runMigrationComparison } from "../../src/eval/live-runner.js";
 import {
   RecordSandboxVerificationInputSchema,
+  buildMcpServer,
   buildEvaluationPrimaryResponse,
   compileScenarioPlanWithEvidence,
   loadEvaluationEvidenceReferences,
@@ -126,6 +127,24 @@ test("persists repository snapshots and binds sandbox verification to the resolv
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("marks timestamped evidence-writing MCP tools as non-idempotent", () => {
+  const server = buildMcpServer({ evidence_store: new EvidenceStore(".exitramp/test-evidence") });
+  const registeredTools = (
+    server as unknown as {
+      _registeredTools: Record<string, { annotations?: { idempotentHint?: boolean } }>;
+    }
+  )._registeredTools;
+
+  for (const name of [
+    "repo_snapshot",
+    "compile_orderdesk_scenario_plan",
+    "record_sandbox_verification",
+  ]) {
+    assert.equal(registeredTools[name]?.annotations?.idempotentHint, false, name);
+  }
+  assert.equal(registeredTools.inspect_orderdesk_behavior?.annotations?.idempotentHint, true);
 });
 
 test("approval-card references must exactly match their immutable artifacts", async () => {
@@ -662,6 +681,92 @@ test("provider-error text is traceable without exposing raw provider details", (
   assert.match(text, /No migration, repository, customer-data, or deployment mutation occurred/);
   assert.ok(text.length < 2_000);
   assert.equal(/observations|attempts|internal_report_digest|provider message|provider failure details/i.test(text), false);
+});
+
+test("MCP persists failed paid evaluation accounting with the completed baseline", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-evaluation-error-"));
+  try {
+    const store = new EvidenceStore({ directory, now: () => new Date("2026-08-25T12:00:00.000Z") });
+    const repository = await persistRepositorySnapshot(store, snapshot());
+    const verification = await persistSandboxVerification(
+      store,
+      repository.repository_snapshot_evidence_id,
+      receipts(),
+    );
+    const compiled = await compileScenarioPlanWithEvidence(
+      store,
+      repository.repository_snapshot_evidence_id,
+      boundScenarioPlan(snapshot()),
+    );
+    const approval = await prepareMigrationEvaluationApproval(store, {
+      baseline_target: "openai/gpt-5.6-luna",
+      candidate_target: "together/openai/gpt-oss-20b",
+      scenario_suite: compiled.scenario_suite,
+      verified_build: verification.verified_build,
+    });
+    let candidateCalls = 0;
+    const server = buildMcpServer({
+      evidence_store: store,
+      invoker: {
+        async invokeCase(target, testCase) {
+          if (target === "together/openai/gpt-oss-20b" && ++candidateCalls === 1) {
+            throw new Error("candidate provider failed");
+          }
+          return passingObservation(testCase);
+        },
+      },
+    });
+    const registeredTools = (server as unknown as {
+      _registeredTools: Record<string, {
+        handler: (input: unknown) => Promise<{ structuredContent?: unknown }>;
+      }>;
+    })._registeredTools;
+    const response = await registeredTools.run_migration_evaluation!.handler({
+      approval_request: approval.result.approval_request,
+    });
+    const structured = response.structuredContent as Record<string, unknown>;
+    assert.equal(structured.status, "error");
+    assert.deepEqual(structured.error, { name: "Error", message: "candidate provider failed" });
+    assert.match(String(structured.evaluation_evidence_id), /^sha256:[a-f0-9]{64}$/);
+    assert.equal("observations" in structured, false);
+    assert.equal("attempts" in structured, false);
+
+    const accounting = structured.attempt_accounting as Record<string, unknown>;
+    assert.deepEqual(accounting.prior_completed_models, [{
+      target: "openai/gpt-5.6-luna",
+      completed_case_attempts: 30,
+      observed_input_tokens: 300,
+      observed_output_tokens: 150,
+      observed_successful_response_cost_usd: 0.03000000000000002,
+    }]);
+    assert.equal(accounting.started_case_attempts, 4);
+    assert.equal(accounting.completed_case_attempts, 3);
+    assert.equal(accounting.failed_case_attempts_without_usage, 1);
+    assert.equal(accounting.total_observed_input_tokens, 330);
+    assert.equal(accounting.total_observed_output_tokens, 165);
+    assert.equal(accounting.total_observed_successful_response_cost_usd, 0.03300000000000002);
+
+    const evidenceId = String(structured.evaluation_evidence_id);
+    const artifact = await store.read(evidenceId);
+    assert.equal(artifact.artifact_type, "evaluation-error");
+    assert.deepEqual(artifact.parent_ids, [
+      approval.result.approval_request.manifest_evidence_id,
+      compiled.compiled_scenario_evidence_id,
+      verification.verification_evidence_id,
+    ]);
+    assert.deepEqual(artifact.payload, {
+      status: "error",
+      reason: "provider evaluation failed",
+      error: { name: "Error", message: "candidate provider failed" },
+      scenario_set_id: compiled.scenario_set_id,
+      repository_snapshot_evidence_id: repository.repository_snapshot_evidence_id,
+      commit_sha: COMMIT,
+      approval_manifest_evidence_id: approval.result.approval_request.manifest_evidence_id,
+      attempt_accounting: accounting,
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the structural verifier does not claim a native sandbox attestation", () => {

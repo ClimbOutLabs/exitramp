@@ -29,6 +29,122 @@ export interface EvaluationAttempt {
   passed: boolean;
 }
 
+export const FAILED_EVALUATION_COST_BASIS =
+  "Provider-reported successful-response usage only; failed responses may be billable without returning usage data." as const;
+
+export interface FailedEvaluationAttemptAccounting {
+  target: ModelTargetId;
+  started_case_attempts: number;
+  completed_case_attempts: number;
+  failed_case_attempts_with_usage: number;
+  failed_case_attempts_without_usage: number;
+  observed_input_tokens: number;
+  observed_output_tokens: number;
+  observed_successful_response_cost_usd: number;
+  prior_completed_models: Array<{
+    target: ModelTargetId;
+    completed_case_attempts: number;
+    observed_input_tokens: number;
+    observed_output_tokens: number;
+    observed_successful_response_cost_usd: number;
+  }>;
+  total_observed_input_tokens: number;
+  total_observed_output_tokens: number;
+  total_observed_successful_response_cost_usd: number;
+  cost_basis: typeof FAILED_EVALUATION_COST_BASIS;
+}
+
+class AttemptEvaluationError extends Error {
+  constructor(
+    readonly original_error: unknown,
+    readonly observation: Observation,
+  ) {
+    super(original_error instanceof Error ? original_error.message : String(original_error));
+    this.name = "AttemptEvaluationError";
+  }
+}
+
+export class ModelEvaluationError extends Error {
+  readonly original_error: { name: string; message: string };
+  readonly attempt_accounting: FailedEvaluationAttemptAccounting;
+
+  constructor(
+    target: ModelTargetId,
+    originalError: unknown,
+    startedAttempts: number,
+    completedAttempts: readonly EvaluationAttempt[],
+    failedErrors: readonly unknown[],
+  ) {
+    const unwrappedOriginal = originalError instanceof AttemptEvaluationError
+      ? originalError.original_error
+      : originalError;
+    const original = {
+      name: unwrappedOriginal instanceof Error ? unwrappedOriginal.name : "UnknownError",
+      message: unwrappedOriginal instanceof Error ? unwrappedOriginal.message : String(unwrappedOriginal),
+    };
+    const failedObservations = failedErrors.flatMap((error) =>
+      error instanceof AttemptEvaluationError ? [error.observation] : []
+    );
+    const observed = [
+      ...completedAttempts.map((attempt) => attempt.observation),
+      ...failedObservations,
+    ];
+    super(original.message);
+    this.name = "ModelEvaluationError";
+    this.original_error = original;
+    this.attempt_accounting = {
+      target,
+      started_case_attempts: startedAttempts,
+      completed_case_attempts: completedAttempts.length,
+      failed_case_attempts_with_usage: failedObservations.length,
+      failed_case_attempts_without_usage:
+        startedAttempts - completedAttempts.length - failedObservations.length,
+      observed_input_tokens: observed.reduce((sum, observation) => sum + observation.input_tokens, 0),
+      observed_output_tokens: observed.reduce((sum, observation) => sum + observation.output_tokens, 0),
+      observed_successful_response_cost_usd: observed.reduce(
+        (sum, observation) => sum + observation.cost_usd,
+        0,
+      ),
+      prior_completed_models: [],
+      total_observed_input_tokens: observed.reduce(
+        (sum, observation) => sum + observation.input_tokens,
+        0,
+      ),
+      total_observed_output_tokens: observed.reduce(
+        (sum, observation) => sum + observation.output_tokens,
+        0,
+      ),
+      total_observed_successful_response_cost_usd: observed.reduce(
+        (sum, observation) => sum + observation.cost_usd,
+        0,
+      ),
+      cost_basis: FAILED_EVALUATION_COST_BASIS,
+    };
+  }
+
+  addPriorCompletedModel(report: ModelEvaluationReport): this {
+    const summary = {
+      target: report.target,
+      completed_case_attempts: report.attempt_count,
+      observed_input_tokens: report.observations.reduce(
+        (sum, observation) => sum + observation.input_tokens,
+        0,
+      ),
+      observed_output_tokens: report.observations.reduce(
+        (sum, observation) => sum + observation.output_tokens,
+        0,
+      ),
+      observed_successful_response_cost_usd: report.total_cost_usd,
+    };
+    this.attempt_accounting.prior_completed_models.push(summary);
+    this.attempt_accounting.total_observed_input_tokens += summary.observed_input_tokens;
+    this.attempt_accounting.total_observed_output_tokens += summary.observed_output_tokens;
+    this.attempt_accounting.total_observed_successful_response_cost_usd +=
+      summary.observed_successful_response_cost_usd;
+    return this;
+  }
+}
+
 export interface ModelEvaluationReport {
   target: ModelTargetId;
   /** The exact safe provider settings requested for every trial in this report. */
@@ -96,18 +212,50 @@ class ConcurrencyGate {
   }
 }
 
+class MapLimitError<R> extends Error {
+  constructor(
+    readonly original_error: unknown,
+    readonly started: number,
+    readonly completed: readonly R[],
+    readonly failures: readonly unknown[],
+  ) {
+    super(original_error instanceof Error ? original_error.message : String(original_error));
+    this.name = "MapLimitError";
+  }
+}
+
 async function mapLimit<T, R>(items: readonly T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
   const output = new Array<R>(items.length);
+  const completed: R[] = [];
   let cursor = 0;
+  let started = 0;
+  let failed = false;
+  let firstError: unknown;
+  const failures: unknown[] = [];
+
   async function runWorker(): Promise<void> {
-    while (true) {
+    while (!failed) {
       const index = cursor;
       cursor += 1;
       if (index >= items.length) return;
-      output[index] = await worker(items[index]!);
+      started += 1;
+      try {
+        const value = await worker(items[index]!);
+        output[index] = value;
+        completed.push(value);
+      } catch (error) {
+        failures.push(error);
+        if (!failed) {
+          failed = true;
+          firstError = error;
+        }
+        return;
+      }
     }
   }
+
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runWorker()));
+  if (failed) throw new MapLimitError(firstError, started, completed, failures);
   return output;
 }
 
@@ -142,16 +290,32 @@ export async function runModelEvaluation(
   const jobs = cases.flatMap((testCase) =>
     Array.from({ length: TRIALS_PER_CASE }, (_, index) => ({ testCase, trial: index + 1 })),
   );
-  const attempts = await mapLimit(jobs, MAX_CONCURRENT_INVOCATIONS, async ({ testCase, trial }) => {
-    const observation = await gate.run(() => invoker.invokeCase(target, testCase));
-    if (observation.case_id !== testCase.id) {
-      throw new Error(
-        `Provider observation case_id ${observation.case_id} does not match requested case ${testCase.id}`,
-      );
-    }
-    const result = scoreCase(testCase, observation);
-    return { case_id: testCase.id, trial, observation, result, passed: isPass(result) };
-  });
+  let attempts: EvaluationAttempt[];
+  try {
+    attempts = await mapLimit(jobs, MAX_CONCURRENT_INVOCATIONS, async ({ testCase, trial }) => {
+      const observation = await gate.run(() => invoker.invokeCase(target, testCase));
+      try {
+        if (observation.case_id !== testCase.id) {
+          throw new Error(
+            `Provider observation case_id ${observation.case_id} does not match requested case ${testCase.id}`,
+          );
+        }
+        const result = scoreCase(testCase, observation);
+        return { case_id: testCase.id, trial, observation, result, passed: isPass(result) };
+      } catch (error) {
+        throw new AttemptEvaluationError(error, observation);
+      }
+    });
+  } catch (error) {
+    if (!(error instanceof MapLimitError)) throw error;
+    throw new ModelEvaluationError(
+      target,
+      error.original_error,
+      error.started,
+      error.completed as readonly EvaluationAttempt[],
+      error.failures,
+    );
+  }
   const observations = attempts.map((attempt) => attempt.observation);
   const behavior = scoreBehaviorEvaluation(cases, observations);
   const passedTrialCount = attempts.filter((attempt) => attempt.passed).length;
@@ -188,7 +352,13 @@ export async function runMigrationComparison(
   const baseline = await runModelEvaluation(baselineTarget, invoker, cases, gate);
   if (!baseline.hard_contract.passed) return baselinePreflightFailure(baseline, candidateTarget);
 
-  const candidate = await runModelEvaluation(candidateTarget, invoker, cases, gate);
+  let candidate: ModelEvaluationReport;
+  try {
+    candidate = await runModelEvaluation(candidateTarget, invoker, cases, gate);
+  } catch (error) {
+    if (error instanceof ModelEvaluationError) error.addPriorCompletedModel(baseline);
+    throw error;
+  }
   const verdict = evaluateMigration({
     candidate: candidateTarget,
     baseline: baselineTarget,

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runMigrationComparison, runModelEvaluation } from "../../src/eval/live-runner.js";
+import {
+  FAILED_EVALUATION_COST_BASIS,
+  ModelEvaluationError,
+  runMigrationComparison,
+  runModelEvaluation,
+} from "../../src/eval/live-runner.js";
 import {
   JUDGE_REPORT_VERSION,
   buildCompletedEvaluationHumanReport,
@@ -74,6 +79,10 @@ test("runs three trials per compiled case with a global concurrency cap", async 
   assert.equal(comparison.baseline.attempt_count, 30);
   assert.equal(comparison.candidate.trials_per_case, 3);
   assert.equal(comparison.candidate.case_pass_rates.length, 10);
+  assert.deepEqual(
+    comparison.baseline.attempts.map(({ case_id, trial }) => `${case_id}:${trial}`),
+    COMPILED_CASES.flatMap((testCase) => [1, 2, 3].map((trial) => `${testCase.id}:${trial}`)),
+  );
   assert.equal(comparison.verdict.status, "eligible");
   const humanReport = buildCompletedEvaluationHumanReport(
     comparison,
@@ -214,6 +223,111 @@ test("fails closed when an invoker misattributes an observation to a different r
 
   await assert.rejects(
     runModelEvaluation("openai/gpt-5.6-luna", invoker, COMPILED_CASES),
-    /does not match requested case/,
+    (error: unknown) => {
+      assert.ok(error instanceof ModelEvaluationError);
+      assert.match(error.original_error.message, /does not match requested case/);
+      assert.deepEqual(error.attempt_accounting, {
+        target: "openai/gpt-5.6-luna",
+        started_case_attempts: 4,
+        completed_case_attempts: 0,
+        failed_case_attempts_with_usage: 4,
+        failed_case_attempts_without_usage: 0,
+        observed_input_tokens: 40,
+        observed_output_tokens: 20,
+        observed_successful_response_cost_usd: 0.004,
+        prior_completed_models: [],
+        total_observed_input_tokens: 40,
+        total_observed_output_tokens: 20,
+        total_observed_successful_response_cost_usd: 0.004,
+        cost_basis: FAILED_EVALUATION_COST_BASIS,
+      });
+      return true;
+    },
+  );
+});
+
+test("stops scheduling after the first rejection and waits for started work to settle", async () => {
+  let startedCalls = 0;
+  let evaluationSettled = false;
+  const releaseStartedCalls: Array<() => void> = [];
+  const invoker: OrderDeskInvoker = {
+    async invokeCase(_target, testCase) {
+      startedCalls += 1;
+      if (startedCalls === 1) throw new Error("paid call rejected");
+      return await new Promise((resolve) => {
+        releaseStartedCalls.push(() => resolve(passingObservation(testCase)));
+      });
+    },
+  };
+
+  const evaluation = runModelEvaluation("openai/gpt-5.6-luna", invoker, COMPILED_CASES).finally(() => {
+    evaluationSettled = true;
+  });
+  const rejection = assert.rejects(evaluation, (error: unknown) => {
+    assert.ok(error instanceof ModelEvaluationError);
+    assert.equal(error.original_error.message, "paid call rejected");
+    assert.deepEqual(error.attempt_accounting, {
+      target: "openai/gpt-5.6-luna",
+      started_case_attempts: 4,
+      completed_case_attempts: 3,
+      failed_case_attempts_with_usage: 0,
+      failed_case_attempts_without_usage: 1,
+      observed_input_tokens: 30,
+      observed_output_tokens: 15,
+      observed_successful_response_cost_usd: 0.003,
+      prior_completed_models: [],
+      total_observed_input_tokens: 30,
+      total_observed_output_tokens: 15,
+      total_observed_successful_response_cost_usd: 0.003,
+      cost_basis: FAILED_EVALUATION_COST_BASIS,
+    });
+    return true;
+  });
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(startedCalls, 4, "only the initial bounded batch may be paid calls");
+  assert.equal(evaluationSettled, false, "the evaluation must wait for already-started work");
+  assert.equal(releaseStartedCalls.length, 3);
+
+  for (const release of releaseStartedCalls) release();
+  await rejection;
+  assert.equal(evaluationSettled, true);
+  assert.equal(startedCalls, 4, "no paid calls may be scheduled after rejection");
+});
+
+test("failed candidate accounting retains the completed baseline usage", async () => {
+  let candidateCalls = 0;
+  const invoker: OrderDeskInvoker = {
+    async invokeCase(target, testCase) {
+      if (target === "together/openai/gpt-oss-20b" && ++candidateCalls === 1) {
+        throw new Error("candidate provider failed");
+      }
+      return passingObservation(testCase);
+    },
+  };
+
+  await assert.rejects(
+    runMigrationComparison(
+      "openai/gpt-5.6-luna",
+      "together/openai/gpt-oss-20b",
+      invoker,
+      COMPILED_CASES,
+      verification(),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelEvaluationError);
+      assert.equal(error.attempt_accounting.target, "together/openai/gpt-oss-20b");
+      assert.deepEqual(error.attempt_accounting.prior_completed_models, [{
+        target: "openai/gpt-5.6-luna",
+        completed_case_attempts: 30,
+        observed_input_tokens: 300,
+        observed_output_tokens: 150,
+        observed_successful_response_cost_usd: 0.03000000000000002,
+      }]);
+      assert.equal(error.attempt_accounting.total_observed_input_tokens, 330);
+      assert.equal(error.attempt_accounting.total_observed_output_tokens, 165);
+      assert.equal(error.attempt_accounting.total_observed_successful_response_cost_usd, 0.03300000000000002);
+      return true;
+    },
   );
 });

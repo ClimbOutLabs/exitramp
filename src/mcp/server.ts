@@ -10,6 +10,8 @@ import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
 import {
+  FAILED_EVALUATION_COST_BASIS,
+  ModelEvaluationError,
   runMigrationComparison,
   type BaselinePreflightFailure,
   type MigrationComparison,
@@ -37,7 +39,7 @@ import {
   type ScenarioPlan,
 } from "../domain/schemas.js";
 import { canonicalJson } from "../domain/canonical.js";
-import { LiveOrderDeskAdapter } from "../providers/adapter.js";
+import { LiveOrderDeskAdapter, type OrderDeskInvoker } from "../providers/adapter.js";
 import { getModelTarget, MODEL_TARGETS, ModelTargetIdSchema, type ModelTargetId } from "../providers/catalog.js";
 import { TRIALS_PER_CASE } from "../eval/policy.js";
 import { RepositorySnapshotSchema, snapshotRepository, type RepositorySnapshot } from "./github.js";
@@ -184,10 +186,33 @@ const EvaluationErrorSchema = z.object({
   repository_snapshot_evidence_id: EvidenceIdSchema,
   commit_sha: z.string().min(1),
   approval_manifest_evidence_id: EvidenceIdSchema,
+  attempt_accounting: z.object({
+    target: ModelTargetIdSchema,
+    started_case_attempts: z.number().int().nonnegative(),
+    completed_case_attempts: z.number().int().nonnegative(),
+    failed_case_attempts_with_usage: z.number().int().nonnegative(),
+    failed_case_attempts_without_usage: z.number().int().nonnegative(),
+    observed_input_tokens: z.number().int().nonnegative(),
+    observed_output_tokens: z.number().int().nonnegative(),
+    observed_successful_response_cost_usd: z.number().nonnegative(),
+    prior_completed_models: z.array(z.object({
+      target: ModelTargetIdSchema,
+      completed_case_attempts: z.number().int().nonnegative(),
+      observed_input_tokens: z.number().int().nonnegative(),
+      observed_output_tokens: z.number().int().nonnegative(),
+      observed_successful_response_cost_usd: z.number().nonnegative(),
+    }).strict()).max(1),
+    total_observed_input_tokens: z.number().int().nonnegative(),
+    total_observed_output_tokens: z.number().int().nonnegative(),
+    total_observed_successful_response_cost_usd: z.number().nonnegative(),
+    cost_basis: z.literal(FAILED_EVALUATION_COST_BASIS),
+  }).strict().nullable(),
 }).strict();
 
 export interface McpServerOptions {
   evidence_store?: EvidenceStore;
+  /** Injectable evaluator for deterministic integration tests and local adapters. */
+  invoker?: OrderDeskInvoker;
 }
 
 /** Human-facing frozen suite reference used on the paid-evaluation approval card. */
@@ -1186,7 +1211,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: true,
       },
     },
@@ -1234,7 +1259,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       title: "Compile a behavior-grounded OrderDesk scenario plan",
       description: "Bind a model-authored coverage plan to an immutable repository snapshot, then compile compiler-owned prompts into an immutable ten-case scenario set.",
       inputSchema: CompileOrderDeskScenarioPlanInputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ repository_snapshot_evidence_id, plan }) => {
       const compiled = await compileScenarioPlanWithEvidence(
@@ -1259,7 +1284,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false,
       },
     },
@@ -1322,7 +1347,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
         const comparison = await runMigrationComparison(
           manifest.baseline_target.id,
           manifest.candidate_target.id,
-          new LiveOrderDeskAdapter(),
+          options.invoker ?? new LiveOrderDeskAdapter(),
           frozen.compiled.cases,
           verification,
         );
@@ -1369,17 +1394,23 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
           structuredContent: result,
         };
       } catch (error) {
+        const reportedError = error instanceof ModelEvaluationError
+          ? error.original_error
+          : {
+              name: error instanceof Error ? error.name : "UnknownError",
+              message: error instanceof Error ? error.message : String(error),
+            };
         const errorPayload = EvaluationErrorSchema.parse({
           status: "error",
           reason: "provider evaluation failed",
-          error: {
-            name: error instanceof Error ? error.name : "UnknownError",
-            message: error instanceof Error ? error.message : String(error),
-          },
+          error: reportedError,
           scenario_set_id: frozen.compiled.scenario_set_id,
           repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
           commit_sha: verificationLink.snapshot.resolved_sha,
           approval_manifest_evidence_id: approval.request.manifest_evidence_id,
+          attempt_accounting: error instanceof ModelEvaluationError
+            ? error.attempt_accounting
+            : null,
         });
         const evaluationArtifact = await evidenceStore.write({
           artifact_type: "evaluation-error",

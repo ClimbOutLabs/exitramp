@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { mkdir, open, readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { link, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { canonicalJson } from "../domain/canonical.js";
 
@@ -25,6 +25,8 @@ export interface EvidenceWriteInput {
 export interface EvidenceStoreOptions {
   directory?: string;
   now?: () => Date;
+  /** Test seam for pausing between complete temp-file write and publication. */
+  before_publish?: () => void | Promise<void>;
 }
 
 export class EvidenceNotFoundError extends Error {
@@ -39,6 +41,29 @@ export class EvidenceIntegrityError extends Error {
     super(message);
     this.name = "EvidenceIntegrityError";
   }
+}
+
+export class EvidenceAtomicPublicationUnsupportedError extends Error {
+  readonly error_code = "EVIDENCE_ATOMIC_PUBLICATION_UNSUPPORTED" as const;
+
+  constructor(
+    public readonly directory: string,
+    public readonly filesystem_error_code: string,
+  ) {
+    super(
+      `EvidenceStore cannot atomically publish evidence in ${directory}: ` +
+      `the filesystem does not support no-replace hard-link publication ` +
+      `(${filesystem_error_code}). Configure EXITRAMP_EVIDENCE_DIR on a local ` +
+      "hard-link-capable filesystem; no non-atomic fallback is provided.",
+    );
+    this.name = "EvidenceAtomicPublicationUnsupportedError";
+  }
+}
+
+function atomicPublicationUnsupported(error: unknown): error is NodeJS.ErrnoException {
+  return ["EPERM", "EXDEV", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EINVAL"].includes(
+    (error as NodeJS.ErrnoException).code ?? "",
+  );
 }
 
 function evidenceDirectory(directory?: string): string {
@@ -148,11 +173,13 @@ function validateEnvelope(value: unknown): EvidenceEnvelope {
 export class EvidenceStore {
   private readonly directoryPath: string;
   private readonly clock: () => Date;
+  private readonly beforePublish: (() => void | Promise<void>) | undefined;
 
   constructor(options?: EvidenceStoreOptions | string) {
     const normalized = typeof options === "string" ? { directory: options } : options;
     this.directoryPath = evidenceDirectory(normalized?.directory);
     this.clock = normalized?.now ?? (() => new Date());
+    this.beforePublish = normalized?.before_publish;
   }
 
   get directory(): string {
@@ -181,21 +208,49 @@ export class EvidenceStore {
     const bytes = canonicalJson(envelope);
     const filePath = this.pathFor(evidenceId);
     await mkdir(dirname(filePath), { recursive: true });
+    // Keep the temporary file beside its final path so publication can use an
+    // atomic same-filesystem hard-link. Unlike rename, link never replaces an
+    // existing destination, which preserves immutable evidence under races.
+    const temporaryPath = join(
+      dirname(filePath),
+      `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    let temporaryCreated = false;
     try {
-      const handle = await open(filePath, "wx");
+      const handle = await open(temporaryPath, "wx");
+      temporaryCreated = true;
       try {
         await handle.writeFile(bytes, "utf8");
       } finally {
         await handle.close();
       }
-      return envelope;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = await this.read(evidenceId);
-      if (canonicalJson(existing) !== bytes) {
-        throw new EvidenceIntegrityError(`Existing evidence artifact differs: ${evidenceId}`);
+      await this.beforePublish?.();
+      try {
+        await link(temporaryPath, filePath);
+      } catch (error) {
+        if (atomicPublicationUnsupported(error)) {
+          throw new EvidenceAtomicPublicationUnsupportedError(
+            this.directoryPath,
+            error.code!,
+          );
+        }
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const existing = await this.read(evidenceId);
+        if (canonicalJson(existing) !== bytes) {
+          throw new EvidenceIntegrityError(`Existing evidence artifact differs: ${evidenceId}`);
+        }
+        return existing;
       }
-      return existing;
+      return envelope;
+    } finally {
+      // A successful link leaves the temporary name as a second hard link;
+      // failed writes must not leave either a visible partial artifact or a
+      // stale temporary file behind.
+      if (temporaryCreated) {
+        await unlink(temporaryPath).catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        });
+      }
     }
   }
 
