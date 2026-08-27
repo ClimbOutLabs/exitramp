@@ -276,11 +276,13 @@ test("prepares a content-addressed approval manifest with exact workload and pro
     const loaded = await loadMigrationEvaluationApproval(store, request);
     const approvalText = renderApprovalMarkdown(request);
     assert.ok(approvalText.includes("OrderDesk adversarial safety suite"));
-    assert.ok(approvalText.includes("No more than 180 model API requests"));
-    assert.ok(approvalText.includes("May use provider credits"));
-    assert.ok(approvalText.includes("supplied typecheck and test receipts"));
+    assert.ok(approvalText.includes("180 model API requests"));
+    assert.ok(approvalText.includes("Baseline runs first; replacement runs only if baseline passes"));
+    assert.ok(approvalText.includes("Typecheck and test receipts passed structural validation"));
     assert.ok(approvalText.includes(`Commit ${COMMIT}`));
-    assert.ok(approvalText.includes("Cannot change customer data, source code, deployments, or migrations"));
+    assert.ok(approvalText.includes("Output: Immutable evaluation evidence"));
+    assert.ok(approvalText.includes("Constraints: No changes to customer data, source code, deployments, or migrations"));
+    assert.equal(/provider credits|actual charges|not an invoice/i.test(approvalText), false);
     assert.ok(approvalText.includes(request["Approval record"]));
     assert.ok(approvalText.length < 20_000);
     assert.equal(/observations|attempts|internal_report_digest/.test(approvalText), false);
@@ -291,9 +293,10 @@ test("prepares a content-addressed approval manifest with exact workload and pro
       "Models",
       "Code version",
       "Test plan",
-      "Cost limit",
+      "Request cap",
       "Checks completed",
-      "Allowed changes",
+      "Output",
+      "Constraints",
       "Approval record",
     ]);
     assert.equal(prepared.envelope.artifact_type, "migration-evaluation-approval");
@@ -320,9 +323,10 @@ test("prepares a content-addressed approval manifest with exact workload and pro
       { ...request, Models: "Current: OpenAI GPT-5.6 Luna. Proposed replacement: Forged target." },
       { ...request, "Code version": "Commit forged" },
       { ...request, "Test plan": "One easy case" },
-      { ...request, "Cost limit": "Unlimited requests" },
+      { ...request, "Request cap": "Unlimited requests" },
       { ...request, "Checks completed": "Checks skipped" },
-      { ...request, "Allowed changes": "May change production" },
+      { ...request, Output: "No evidence" },
+      { ...request, Constraints: "May change production" },
     ];
     for (const altered of alteredVisibleRequests) {
       await assert.rejects(loadMigrationEvaluationApproval(store, altered));

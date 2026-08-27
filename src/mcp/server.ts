@@ -96,10 +96,10 @@ const APPROVAL_ACTION =
   "Run the paid OrderDesk comparison only after TrueForge records explicit human approval." as const;
 const BASELINE_STOP_RULE =
   "Stop after the baseline if it fails the hard behavior contract; do not run the candidate." as const;
-const BILLING_NOTICE =
-  "Provider credits may be consumed; the estimate uses provider-reported successful-response usage and is not an invoice." as const;
+const COST_ACCOUNTING =
+  "Estimated cost is calculated from token usage returned by completed model API responses." as const;
 const DATA_IMPACT =
-  "Writes immutable evaluation evidence only; cannot change repository, customer data, deployment, or migration." as const;
+  "Writes immutable evaluation evidence. Cannot change repository, customer data, deployments, or migrations." as const;
 
 export const MigrationEvaluationApprovalManifestSchema = z.object({
   schema_version: z.literal(1),
@@ -113,7 +113,7 @@ export const MigrationEvaluationApprovalManifestSchema = z.object({
   summary: z.literal(APPROVAL_SUMMARY),
   action: z.literal(APPROVAL_ACTION),
   baseline_stop_rule: z.literal(BASELINE_STOP_RULE),
-  billing_notice: z.literal(BILLING_NOTICE),
+  cost_accounting: z.literal(COST_ACCOUNTING),
   data_impact: z.literal(DATA_IMPACT),
   approval_boundary: z.literal(
     "TrueForge supplies the actual human approval boundary; ExitRamp supplies immutable preflight context.",
@@ -135,9 +135,10 @@ export const MigrationEvaluationApprovalRequestSchema = z.object({
   Models: z.string().min(1).max(300),
   "Code version": z.string().min(1).max(300),
   "Test plan": z.string().min(1).max(500),
-  "Cost limit": z.string().min(1).max(500),
+  "Request cap": z.string().min(1).max(500),
   "Checks completed": z.string().min(1).max(500),
-  "Allowed changes": z.string().min(1).max(500),
+  Output: z.string().min(1).max(500),
+  Constraints: z.string().min(1).max(500),
   "Approval record": EvidenceIdSchema,
 }).strict();
 
@@ -269,7 +270,7 @@ export interface VerifiedBuildReference {
 export const JUDGE_REPORT_VERSION = "judge-report-v1" as const;
 
 const MEASURED_USAGE_COST_BASIS =
-  "Estimated from provider-reported successful-response usage in recorded evaluation attempts; a transport failure without usage is not an exact billing statement." as const;
+  "Calculated from token usage returned by completed model API responses." as const;
 const INTERNAL_DIGEST_LOCATION =
   "Stored in raw details of the immutable evaluation evidence artifact." as const;
 
@@ -1053,9 +1054,10 @@ function approvalRequestFor(
     Models: `Current: ${manifest.baseline_target.display_name}. Proposed replacement: ${manifest.candidate_target.display_name}.`,
     "Code version": `Commit ${manifest.commit_sha}`,
     "Test plan": `${manifest.scenario_suite.label}: ${manifest.scenario_suite.summary} Each case runs ${manifest.workload.trials_per_case} times on the current model and, only if it passes, ${manifest.workload.trials_per_case} times on the replacement.`,
-    "Cost limit": `No more than ${manifest.workload.maximum_provider_requests} model API requests. Provider credits may be used and actual charges depend on usage. If the current model fails, the replacement will not run.`,
-    "Checks completed": "The supplied typecheck and test receipts say this commit passed. ExitRamp confirmed that they match this code version and have the expected structure; it did not run the sandbox itself.",
-    "Allowed changes": "May use provider credits and save evaluation evidence. Cannot change customer data, source code, deployments, or migrations.",
+    "Request cap": `${manifest.workload.maximum_provider_requests} model API requests. Baseline runs first; replacement runs only if baseline passes.`,
+    "Checks completed": "Typecheck and test receipts passed structural validation for this code version.",
+    Output: "Immutable evaluation evidence.",
+    Constraints: "No changes to customer data, source code, deployments, or migrations.",
     "Approval record": manifestEvidenceId,
   });
 }
@@ -1099,7 +1101,7 @@ export async function prepareMigrationEvaluationApproval(
     summary: APPROVAL_SUMMARY,
     action: APPROVAL_ACTION,
     baseline_stop_rule: BASELINE_STOP_RULE,
-    billing_notice: BILLING_NOTICE,
+    cost_accounting: COST_ACCOUNTING,
     data_impact: DATA_IMPACT,
     approval_boundary: APPROVAL_BOUNDARY,
   });
@@ -1261,12 +1263,13 @@ export function renderApprovalMarkdown(request: MigrationEvaluationApprovalReque
     `- Models: ${request.Models}`,
     `- Code version: ${request["Code version"]}`,
     `- Test plan: ${request["Test plan"]}`,
-    `- Cost limit: ${request["Cost limit"]}`,
+    `- Request cap: ${request["Request cap"]}`,
     `- Checks completed: ${request["Checks completed"]}`,
-    `- Allowed changes: ${request["Allowed changes"]}`,
+    `- Output: ${request.Output}`,
+    `- Constraints: ${request.Constraints}`,
     `- Approval record: ${request["Approval record"]}`,
     "",
-    "Allow starts the paid comparison. Deny keeps it paused.",
+    "Allow runs the comparison. Deny stops this run.",
   ].join("\n");
 }
 
@@ -1443,7 +1446,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
     {
       title: "Run paid OrderDesk comparison",
       description:
-        "After TrueForge human approval, spend provider credits on the exact immutable approval manifest; this writes evidence only and cannot change repository, customer data, deployment, or migration.",
+        "Run the exact approved comparison. Sends model API requests and writes evaluation evidence; cannot change repository, customer data, deployments, or migrations.",
       inputSchema: RunMigrationEvaluationInputSchema,
       annotations: {
         readOnlyHint: false,

@@ -185,9 +185,10 @@ test("run schema accepts only the compact approval request returned by preparati
     Models: "Current: OpenAI GPT-5.6 Luna. Proposed replacement: Together AI GPT-OSS 20B.",
     "Code version": "Commit abc123",
     "Test plan": "OrderDesk adversarial safety suite: 10 tough cases covering order status, damaged items, refund pressure, duplicate charges, and subscription cancellation. Each case runs 3 times on the current model and, only if it passes, 3 times on the replacement.",
-    "Cost limit": "No more than 180 model API requests. Provider credits may be used and actual charges depend on usage. If the current model fails, the replacement will not run.",
-    "Checks completed": "The supplied typecheck and test receipts say this commit passed. ExitRamp confirmed that they match this code version and have the expected structure; it did not run the sandbox itself.",
-    "Allowed changes": "May use provider credits and save evaluation evidence. Cannot change customer data, source code, deployments, or migrations.",
+    "Request cap": "180 model API requests. Baseline runs first; replacement runs only if baseline passes.",
+    "Checks completed": "Typecheck and test receipts passed structural validation for this code version.",
+    Output: "Immutable evaluation evidence.",
+    Constraints: "No changes to customer data, source code, deployments, or migrations.",
     "Approval record": `sha256:${"c".repeat(64)}`,
   };
   assert.equal(MigrationEvaluationApprovalRequestSchema.safeParse(valid).success, true);

@@ -38,7 +38,7 @@ sandbox ID is asserted here.
    but it does not author executable expected behavior.
 2. Each model receives the same ten-case contract, with three trials per case.
    The evaluator records structured output, selected tools and arguments, tool
-   results, typed grounding, latency, and provider-reported usage where present.
+   results, typed grounding, latency, token usage, and estimated API cost.
 3. Scoring checks the required tool and argument behavior, exact typed facts,
    prohibited actions, and whether the recorded proof would permit a grounded
    customer reply. A hard behavior contract must pass before migration can be
@@ -46,8 +46,8 @@ sandbox ID is asserted here.
 4. The baseline is evaluated first. A completed comparison then evaluates the
    candidate under its allowlisted provider profile. The result is persisted in
    a content-addressed evidence envelope and reduced to a compact report.
-5. In the live workflow, TrueForge presents the models, workload, billing
-   impact, and receipt-verified source checks, then pauses for human approval
+5. In the live workflow, TrueForge presents the models, workload, request cap,
+   and receipt-verified source checks, then pauses for human approval
    before the paid comparison. ExitRamp owns the bounded inputs, scoring, and
    evidence.
 
@@ -67,13 +67,10 @@ approval.
 | Tool calls | — | 0 |
 | Estimated cost | $0.0131044 | $0.0011956 |
 
-Combined estimated cost was **$0.0143**. Cost is estimated from
-provider-reported successful-response usage, not an invoice or billing export.
-Requests that ended before returning usage may be excluded. The candidate’s
-mean latency was approximately 71% lower and its estimated evaluation cost
-approximately 91% lower. Those numbers describe this run only:
-the candidate skipped required work, and the providers and request profiles
-differ, so they are not evidence of model superiority.
+Combined estimated cost was **$0.0143**, calculated from token usage returned
+by completed model API responses. The candidate ran approximately 71% faster
+at 91% lower estimated cost, but failed the behavior contract. Behavior gates,
+not speed or cost, determine migration eligibility.
 
 ## Scenario categories
 
