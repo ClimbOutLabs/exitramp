@@ -41,7 +41,11 @@ import {
   type ScenarioPlan,
 } from "../domain/schemas.js";
 import { canonicalJson } from "../domain/canonical.js";
-import { LiveOrderDeskAdapter, type OrderDeskInvoker } from "../providers/adapter.js";
+import {
+  assertProviderCredentials,
+  LiveOrderDeskAdapter,
+  type OrderDeskInvoker,
+} from "../providers/adapter.js";
 import { getModelTarget, MODEL_TARGETS, ModelTargetIdSchema, type ModelTargetId } from "../providers/catalog.js";
 import { TRIALS_PER_CASE } from "../eval/policy.js";
 import { RepositorySnapshotSchema, snapshotRepository, type RepositorySnapshot } from "./github.js";
@@ -246,6 +250,8 @@ export interface McpServerOptions {
   evidence_store?: EvidenceStore;
   /** Injectable evaluator for deterministic integration tests and local adapters. */
   invoker?: OrderDeskInvoker;
+  /** Resolve provider credentials from the server process at tool-call time. */
+  provider_environment?: () => NodeJS.ProcessEnv;
 }
 
 /** Human-facing frozen suite reference used on the paid-evaluation approval card. */
@@ -1363,6 +1369,17 @@ export function renderEvaluationErrorMarkdown(evaluationEvidenceId: string): str
 export function buildMcpServer(options: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: "exitramp", version: "0.1.0" });
   const evidenceStore = options.evidence_store ?? new EvidenceStore({});
+  // Injected invokers are deterministic test/local seams and own their own
+  // credential behavior. The production adapter is always checked here and
+  // again immediately before the one-shot approval claim.
+  const requireProviderCredentials = options.invoker === undefined;
+  const checkedProviderEnvironment = (targetIds: readonly ModelTargetId[]) => {
+    const environment = options.provider_environment?.() ?? process.env;
+    if (requireProviderCredentials) {
+      assertProviderCredentials(targetIds, environment);
+    }
+    return environment;
+  };
 
   server.registerTool(
     "repo_snapshot",
@@ -1483,6 +1500,8 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async (input) => {
+      const parsed = PrepareMigrationEvaluationApprovalInputSchema.parse(input);
+      checkedProviderEnvironment([parsed.baseline_target, parsed.candidate_target]);
       const prepared = await prepareMigrationEvaluationApproval(evidenceStore, input);
       return {
         content: [{ type: "text", text: renderApprovalMarkdown(prepared.result.approval_request) }],
@@ -1507,6 +1526,10 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
     },
     async ({ approval_request }) => {
       const approval = await loadMigrationEvaluationApproval(evidenceStore, approval_request);
+      const providerEnvironment = checkedProviderEnvironment([
+        approval.manifest.baseline_target.id,
+        approval.manifest.candidate_target.id,
+      ]);
       // Consume the human approval before constructing an adapter or making
       // the first provider request. This remains consumed on every terminal
       // outcome, including provider failures, so retries cannot spend twice.
@@ -1519,7 +1542,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
         comparison = await runMigrationComparison(
           manifest.baseline_target.id,
           manifest.candidate_target.id,
-          options.invoker ?? new LiveOrderDeskAdapter(),
+          options.invoker ?? new LiveOrderDeskAdapter({ environment: providerEnvironment }),
           frozen.compiled.cases,
           verification,
         );

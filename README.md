@@ -225,10 +225,21 @@ repo_snapshot
   → run_migration_evaluation
 ~~~
 
-Live evaluation requires <code>OPENAI_API_KEY</code> and/or
-<code>TOGETHER_API_KEY</code> for the allowlisted targets. It runs 30 baseline
-attempts, then up to 30 candidate attempts. A failed baseline skips the
-candidate.
+Live evaluation requires <code>OPENAI_API_KEY</code> and
+<code>TOGETHER_API_KEY</code> in the ExitRamp server process. On Windows, save
+them once in a current-user encrypted vault and launch the server with:
+
+~~~powershell
+.\scripts\set-provider-keys.ps1
+.\scripts\start-mcp.ps1
+~~~
+
+TrueForge stores only the MCP URL; provider keys exist in the launcher and
+ExitRamp child process only while the server is running. On other platforms,
+provide the two environment variables through the platform's secret manager
+before running <code>pnpm mcp</code>.
+The live comparison runs 30 baseline attempts, then up to 30 candidate attempts.
+A failed baseline skips the candidate.
 
 Set <code>EXITRAMP_EVIDENCE_DIR</code> to place immutable evidence on a local
 hard-link-capable filesystem. If <code>GITHUB_TOKEN</code> is configured, it is

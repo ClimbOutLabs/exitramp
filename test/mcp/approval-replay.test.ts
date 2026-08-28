@@ -20,6 +20,7 @@ import {
 } from "../../src/eval/scenario-authoring.js";
 import { VERIFICATION_COMMAND_PLAN } from "../../src/eval/verification.js";
 import type { RepositorySnapshot } from "../../src/mcp/github.js";
+import { MissingProviderCredentialError } from "../../src/providers/adapter.js";
 import {
   passingObservation,
   SCENARIO_PLAN,
@@ -174,6 +175,44 @@ test("run_migration_evaluation consumes approval before provider work and reject
     assert.equal(calls, 60, "the replay must not start a second paid evaluation");
     await assert.rejects(handler(request), ApprovalAlreadyConsumedError);
     assert.equal(calls, 60, "retries after completion must remain free of provider calls");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a missing provider credential does not consume the one-shot approval", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-missing-credential-"));
+  try {
+    const store = new EvidenceStore({ directory, now: () => new Date("2026-08-25T12:00:00.000Z") });
+    const approval = await preparedApproval(store);
+    const request = { approval_request: approval.result.approval_request };
+    const missingCredentialServer = buildMcpServer({
+      evidence_store: store,
+      provider_environment: () => ({
+        OPENAI_API_KEY: "request-openai",
+        TOGETHER_API_KEY: "",
+      }),
+    });
+
+    await assert.rejects(
+      handlerFor(missingCredentialServer)(request),
+      (error: unknown) =>
+        error instanceof MissingProviderCredentialError &&
+        error.message === "Missing required provider credential: TOGETHER_API_KEY",
+    );
+
+    let calls = 0;
+    const retryServer = buildMcpServer({
+      evidence_store: store,
+      invoker: {
+        async invokeCase(_target, testCase) {
+          calls += 1;
+          return passingObservation(testCase);
+        },
+      },
+    });
+    await handlerFor(retryServer)(request);
+    assert.equal(calls, 60, "fixing credentials must allow the original unconsumed approval to run once");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

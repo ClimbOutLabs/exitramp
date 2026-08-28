@@ -23,6 +23,19 @@ export class MissingProviderCredentialError extends Error {
   }
 }
 
+export function assertProviderCredentials(
+  targetIds: readonly ModelTargetId[],
+  environment: NodeJS.ProcessEnv = process.env,
+): void {
+  for (const targetId of targetIds) {
+    const target = getModelTarget(targetId);
+    const value = environment[target.api_key_env];
+    if (!value || value.trim() !== value || value.length > 4_096) {
+      throw new MissingProviderCredentialError(target.api_key_env);
+    }
+  }
+}
+
 export interface OrderDeskInvoker {
   invokeCase(targetId: ModelTargetId, testCase: EvalCase): Promise<Observation>;
   /** In-process credential values used only to redact terminal error evidence. */
