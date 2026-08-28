@@ -571,6 +571,8 @@ test("persists a human-readable terminal baseline rejection without running the 
     assert.match(baselineText, /^## Migration evaluation:/);
     assert.match(baselineText, /Baseline .*: 29\/30 passed; hard contract failed/);
     assert.match(baselineText, /Candidate .*: skipped/);
+    assert.match(baselineText, /### Why the comparison stopped/);
+    assert.match(baselineText, /The model called a prohibited or unexpected tool\./);
     assert.ok(baselineText.includes("Estimated cost"));
     assert.ok(baselineText.includes(terminal.envelope.evidence_id));
     assert.ok(baselineText.includes("immutable evaluation evidence only"));
@@ -680,6 +682,7 @@ test("returns a bounded completed report while immutable evidence retains the ra
     assert.ok(completedText.includes("Candidate critical-tool behavior: 100.0%"));
     assert.ok(completedText.includes("Candidate typed grounding: 100.0%"));
     assert.ok(completedText.includes("Candidate prohibited tool calls: 0"));
+    assert.equal(completedText.includes("### Why the migration was rejected"), false);
     assert.ok(completedText.includes("Estimated cost"));
     assert.ok(completedText.includes(persisted.envelope.evidence_id));
     assert.ok(completedText.includes("immutable evaluation evidence only"));
