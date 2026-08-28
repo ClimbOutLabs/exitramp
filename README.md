@@ -41,31 +41,35 @@ only passes after a matching <code>cancel_subscription</code> call returns a
 typed <code>cancelled</code> result. A convincing sentence is not proof.
 
 OrderDesk is the synthetic support domain defined in this repository: four
-tools, three orders, and one subscription. It is not connected to the
-commercial product with a similar name.
+tools, three orders, and one subscription.
 
 ## See it run
 
-ExitRamp runs as an MCP server inside TrueForge. These screenshots come from
-the recorded end-to-end session described below.
+ExitRamp runs as an MCP server inside TrueForge.
 
-The pictured run used TrueForge's direct human approval gate. The current
-workflow also locks the exact models, maximum provider requests, scenarios,
-and check receipts before asking for approval.
+See pics below.
+
+### Human approval before the paid run
+
+![A real TrueForge approval screen showing a plain-English decision brief and the pending Allow or Deny gate.](docs/assets/trueforge-approval.png)
+
+*A real pending approval from the current-code session. Technical request
+details are collapsed so the reviewer sees the models, test scope, request
+cap, output, and constraints before choosing Allow or Deny.*
 
 ### See the migration decision
 
 ![A real TrueForge ExitRamp session rejecting a replacement model that failed the behavior contract.](docs/assets/trueforge-decision.png)
 
-The result is direct: the baseline did the required work, the candidate did
-not, so ExitRamp rejected the migration.
+*The baseline did the required work, the candidate did not, so ExitRamp
+rejected the migration.*
 
 ### Read the verdict
 
 ![A real TrueForge ExitRamp judge report rejecting the candidate after 10 cases and 30 trials per model.](docs/assets/trueforge-results.jpg)
 
-The report explains the decision in plain English and keeps the detailed tool
-trail available in the same TrueForge session.
+*The report shows test coverage, failed gates, latency, and estimated API
+cost.*
 
 ## Recorded evaluation
 
@@ -81,13 +85,12 @@ trail available in the same TrueForge session.
 | Tool calls | Required work completed | **0** |
 | Estimated cost | $0.0131044 | $0.0011956 |
 
-The estimate uses usage returned by successful provider responses. It is not an
-invoice and may exclude requests that ended before returning usage.
+Estimated cost is calculated from token usage returned by completed model API
+responses.
 
-**Recorded verdict: migration rejected.** The candidate was about 71% lower in
-mean latency and 91% lower by this cost estimate, but it skipped required work.
-The providers and request profiles differ, so this is not a general
-model-ranking claim.
+**Recorded verdict: migration rejected.** The candidate ran about 71% faster at
+91% lower estimated cost, but it skipped required work. Behavior gates—not
+speed or cost—determine migration eligibility.
 
 <details>
 <summary><strong>Run provenance and claim boundary</strong></summary>
@@ -121,8 +124,8 @@ basis, and claim boundaries.
    facts, and pass/fail oracles.
 4. **Verify the source checks.** <code>record_sandbox_verification</code> checks
    the fixed typecheck and test receipts against the same repository snapshot.
-5. **Pause for approval.** TrueForge shows the human the exact models, cost
-   boundary, scenario suite, receipt-verified checks, and evidence lineage
+5. **Pause for approval.** TrueForge shows the human the exact models, request
+   cap, scenario suite, receipt-verified checks, and evidence lineage
    before any paid request.
 6. **Evaluate safely.** The baseline runs first. A failing baseline stops the
    candidate spend. SDK retries are disabled and concurrency is bounded.

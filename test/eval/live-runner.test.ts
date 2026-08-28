@@ -121,7 +121,10 @@ test("runs three trials per compiled case with a global concurrency cap", async 
   );
   assert.equal("evaluation_profile" in primary.human_report.models.baseline, false);
   assert.equal(primary.human_report.total_estimated_cost_usd, comparison.total_cost_usd);
-  assert.match(primary.human_report.cost_basis, /provider-reported successful-response usage/i);
+  assert.equal(
+    primary.human_report.cost_basis,
+    "Calculated from token usage returned by completed model API responses.",
+  );
   assert.deepEqual(primary.human_report.failed_gates, []);
   assert.match(primary.human_report.next_step, /this repository applied nothing/i);
   assert.equal(primary.technical_details.evaluation_envelope_id, `sha256:${"e".repeat(64)}`);

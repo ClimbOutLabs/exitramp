@@ -42,8 +42,8 @@
     <circle cx="724" cy="164" r="16" fill="#F59E0B"/>
     <text x="724" y="170" text-anchor="middle" fill="#111827" font-size="15" font-weight="800">4</text>
     <text x="718" y="211" fill="#111827" font-size="18" font-weight="750">Approve</text>
-    <text x="718" y="239" fill="#92400E" font-size="15" font-weight="600">Human sees cost,</text>
-    <text x="718" y="262" fill="#92400E" font-size="15" font-weight="600">models + evidence</text>
+    <text x="718" y="239" fill="#92400E" font-size="15" font-weight="600">Request cap, models</text>
+    <text x="718" y="262" fill="#92400E" font-size="15" font-weight="600">+ evidence</text>
     <text x="718" y="290" fill="#B45309" font-size="13" font-weight="700">TRUEFORGE PAUSE</text>
 
     <path d="M866 221h36" stroke="#F59E0B" stroke-width="3" marker-end="url(#arrow)"/>

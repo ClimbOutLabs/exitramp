@@ -96,10 +96,10 @@ const APPROVAL_ACTION =
   "Run the paid OrderDesk comparison only after TrueForge records explicit human approval." as const;
 const BASELINE_STOP_RULE =
   "Stop after the baseline if it fails the hard behavior contract; do not run the candidate." as const;
-const BILLING_NOTICE =
-  "Provider credits may be consumed; the estimate uses provider-reported successful-response usage and is not an invoice." as const;
+const COST_ACCOUNTING =
+  "Estimated cost is calculated from token usage returned by completed model API responses." as const;
 const DATA_IMPACT =
-  "Writes immutable evaluation evidence only; cannot change repository, customer data, deployment, or migration." as const;
+  "Writes immutable evaluation evidence. Cannot change repository, customer data, deployments, or migrations." as const;
 
 export const MigrationEvaluationApprovalManifestSchema = z.object({
   schema_version: z.literal(1),
@@ -113,7 +113,7 @@ export const MigrationEvaluationApprovalManifestSchema = z.object({
   summary: z.literal(APPROVAL_SUMMARY),
   action: z.literal(APPROVAL_ACTION),
   baseline_stop_rule: z.literal(BASELINE_STOP_RULE),
-  billing_notice: z.literal(BILLING_NOTICE),
+  cost_accounting: z.literal(COST_ACCOUNTING),
   data_impact: z.literal(DATA_IMPACT),
   approval_boundary: z.literal(
     "TrueForge supplies the actual human approval boundary; ExitRamp supplies immutable preflight context.",
@@ -126,9 +126,20 @@ export type MigrationEvaluationApprovalManifest = z.infer<
 // Short aliases keep the approval contract discoverable to MCP integrations.
 export const ApprovalManifestSchema = MigrationEvaluationApprovalManifestSchema;
 
+/**
+ * TrueForge v0.1.3 renders gated MCP arguments verbatim. Keep this request
+ * compact and human-facing; the complete manifest remains in immutable evidence.
+ */
 export const MigrationEvaluationApprovalRequestSchema = z.object({
-  manifest_evidence_id: EvidenceIdSchema,
-  manifest: MigrationEvaluationApprovalManifestSchema,
+  Decision: z.literal("Start the paid OrderDesk model comparison"),
+  Models: z.string().min(1).max(300),
+  "Code version": z.string().min(1).max(300),
+  "Test plan": z.string().min(1).max(500),
+  "Request cap": z.string().min(1).max(500),
+  "Checks completed": z.string().min(1).max(500),
+  Output: z.string().min(1).max(500),
+  Constraints: z.string().min(1).max(500),
+  "Approval record": EvidenceIdSchema,
 }).strict();
 
 export type MigrationEvaluationApprovalRequest = z.infer<
@@ -259,7 +270,7 @@ export interface VerifiedBuildReference {
 export const JUDGE_REPORT_VERSION = "judge-report-v1" as const;
 
 const MEASURED_USAGE_COST_BASIS =
-  "Estimated from provider-reported successful-response usage in recorded evaluation attempts; a transport failure without usage is not an exact billing statement." as const;
+  "Calculated from token usage returned by completed model API responses." as const;
 const INTERNAL_DIGEST_LOCATION =
   "Stored in raw details of the immutable evaluation evidence artifact." as const;
 
@@ -1034,6 +1045,23 @@ function trustedApprovalTarget(targetId: ModelTargetId): MigrationEvaluationAppr
   return { id: target.id, display_name: target.display_name };
 }
 
+function approvalRequestFor(
+  manifestEvidenceId: string,
+  manifest: MigrationEvaluationApprovalManifest,
+): MigrationEvaluationApprovalRequest {
+  return MigrationEvaluationApprovalRequestSchema.parse({
+    Decision: "Start the paid OrderDesk model comparison",
+    Models: `Current: ${manifest.baseline_target.display_name}. Proposed replacement: ${manifest.candidate_target.display_name}.`,
+    "Code version": `Commit ${manifest.commit_sha}`,
+    "Test plan": `${manifest.scenario_suite.label}: ${manifest.scenario_suite.summary} Each case runs ${manifest.workload.trials_per_case} times on the current model and, only if it passes, ${manifest.workload.trials_per_case} times on the replacement.`,
+    "Request cap": `${manifest.workload.maximum_provider_requests} model API requests. Baseline runs first; replacement runs only if baseline passes.`,
+    "Checks completed": "Typecheck and test receipts passed structural validation for this code version.",
+    Output: "Immutable evaluation evidence.",
+    Constraints: "No changes to customer data, source code, deployments, or migrations.",
+    "Approval record": manifestEvidenceId,
+  });
+}
+
 export interface PreparedMigrationEvaluationApproval {
   approval_request: MigrationEvaluationApprovalRequest;
 }
@@ -1073,7 +1101,7 @@ export async function prepareMigrationEvaluationApproval(
     summary: APPROVAL_SUMMARY,
     action: APPROVAL_ACTION,
     baseline_stop_rule: BASELINE_STOP_RULE,
-    billing_notice: BILLING_NOTICE,
+    cost_accounting: COST_ACCOUNTING,
     data_impact: DATA_IMPACT,
     approval_boundary: APPROVAL_BOUNDARY,
   });
@@ -1085,10 +1113,9 @@ export async function prepareMigrationEvaluationApproval(
     ],
     payload: manifest,
   });
-  const approvalRequest = { manifest_evidence_id: envelope.evidence_id, manifest };
   return {
     envelope,
-    result: { approval_request: MigrationEvaluationApprovalRequestSchema.parse(approvalRequest) },
+    result: { approval_request: approvalRequestFor(envelope.evidence_id, manifest) },
   };
 }
 
@@ -1176,19 +1203,22 @@ export async function loadMigrationEvaluationApproval(
   evidence: Awaited<ReturnType<typeof loadEvaluationEvidenceReferences>>;
 }> {
   const request = MigrationEvaluationApprovalRequestSchema.parse(input);
-  const envelope = await store.read(request.manifest_evidence_id);
-  if (
-    envelope.artifact_type !== "migration-evaluation-approval" ||
-    !sameIds(envelope.parent_ids, [
-      request.manifest.scenario_suite.technical_evidence_id,
-      request.manifest.verified_build.technical_evidence_id,
-    ])
-  ) {
-    throw new Error("Approval manifest has invalid parent links");
+  const envelope = await store.read(request["Approval record"]);
+  if (envelope.artifact_type !== "migration-evaluation-approval") {
+    throw new Error("Approval ID does not reference a migration-evaluation-approval artifact");
   }
   const manifest = MigrationEvaluationApprovalManifestSchema.parse(envelope.payload);
-  if (canonicalJson(manifest) !== canonicalJson(request.manifest)) {
-    throw new Error("Approval manifest does not match immutable evidence");
+  if (!sameIds(
+    envelope.parent_ids,
+    [
+      manifest.scenario_suite.technical_evidence_id,
+      manifest.verified_build.technical_evidence_id,
+    ],
+  )) {
+    throw new Error("Approval manifest has invalid parent links");
+  }
+  if (canonicalJson(request) !== canonicalJson(approvalRequestFor(envelope.evidence_id, manifest))) {
+    throw new Error("Approval request does not match immutable evidence");
   }
   if (manifest.baseline_target.id === manifest.candidate_target.id) {
     throw new Error("Baseline and candidate must differ");
@@ -1227,24 +1257,19 @@ export async function loadMigrationEvaluationApproval(
 }
 
 export function renderApprovalMarkdown(request: MigrationEvaluationApprovalRequest): string {
-  const { manifest } = request;
   return [
-    "## Migration evaluation approval prepared",
+    "## Approve a paid model comparison?",
     "",
-    `- Manifest evidence: ${request.manifest_evidence_id}`,
-    `- Baseline: ${manifest.baseline_target.display_name}`,
-    `- Candidate: ${manifest.candidate_target.display_name}`,
-    `- Workload: ${manifest.workload.baseline_trials} baseline trials + conditional ${manifest.workload.candidate_trials_if_baseline_passes} candidate trials (${manifest.workload.maximum_trials} maximum trials)`,
-    `- Provider request bound: at most ${manifest.workload.maximum_provider_requests} requests`,
-    `- Suite: ${manifest.scenario_suite.label} (${manifest.workload.cases} cases × ${manifest.workload.trials_per_case} trials each)`,
-    `- Source checks: ${manifest.verified_build.label} at commit ${manifest.commit_sha}`,
-    `- Receipt scope: ${manifest.verified_build.verification_scope}`,
-    `- Billing: ${manifest.billing_notice}`,
-    `- Data impact: ${manifest.data_impact}`,
+    `- Models: ${request.Models}`,
+    `- Code version: ${request["Code version"]}`,
+    `- Test plan: ${request["Test plan"]}`,
+    `- Request cap: ${request["Request cap"]}`,
+    `- Checks completed: ${request["Checks completed"]}`,
+    `- Output: ${request.Output}`,
+    `- Constraints: ${request.Constraints}`,
+    `- Approval record: ${request["Approval record"]}`,
     "",
-    manifest.action,
-    manifest.baseline_stop_rule,
-    manifest.approval_boundary,
+    "Allow runs the comparison. Deny stops this run.",
   ].join("\n");
 }
 
@@ -1421,7 +1446,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
     {
       title: "Run paid OrderDesk comparison",
       description:
-        "After TrueForge human approval, spend provider credits on the exact immutable approval manifest; this writes evidence only and cannot change repository, customer data, deployment, or migration.",
+        "Run the exact approved comparison. Sends model API requests and writes evaluation evidence; cannot change repository, customer data, deployments, or migrations.",
       inputSchema: RunMigrationEvaluationInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -1435,7 +1460,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       // Consume the human approval before constructing an adapter or making
       // the first provider request. This remains consumed on every terminal
       // outcome, including provider failures, so retries cannot spend twice.
-      await consumeMigrationEvaluationApproval(evidenceStore, approval.request.manifest_evidence_id);
+      await consumeMigrationEvaluationApproval(evidenceStore, approval.request["Approval record"]);
       const { manifest, evidence: evaluationEvidence } = approval;
       const { frozen, verificationLink } = evaluationEvidence;
       const { report: verification } = verificationLink;
@@ -1458,14 +1483,14 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
           scenario_set_id: frozen.compiled.scenario_set_id,
           repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
           commit_sha: verificationLink.snapshot.resolved_sha,
-          approval_manifest_evidence_id: approval.request.manifest_evidence_id,
+          approval_manifest_evidence_id: approval.request["Approval record"],
           attempt_accounting: error instanceof ModelEvaluationError
             ? error.attempt_accounting
             : null,
         });
         const evaluationArtifact = await evidenceStore.write({
           artifact_type: "evaluation-error",
-          parent_ids: [approval.request.manifest_evidence_id, frozen.envelope.evidence_id, verificationLink.envelope.evidence_id],
+          parent_ids: [approval.request["Approval record"], frozen.envelope.evidence_id, verificationLink.envelope.evidence_id],
           payload: errorPayload,
         });
         const result = {
@@ -1483,7 +1508,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
         const terminal = await persistBaselineRejectedEvaluation(evidenceStore, {
           scenario_evidence_id: frozen.envelope.evidence_id,
           verification_evidence_id: verificationLink.envelope.evidence_id,
-          approval_manifest_evidence_id: approval.request.manifest_evidence_id,
+          approval_manifest_evidence_id: approval.request["Approval record"],
           scenario_set_id: frozen.compiled.scenario_set_id,
           repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
           commit_sha: verificationLink.snapshot.resolved_sha,
@@ -1504,7 +1529,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       const evaluationArtifact = await persistCompletedMigrationEvaluation(evidenceStore, {
         scenario_evidence_id: frozen.envelope.evidence_id,
         verification_evidence_id: verificationLink.envelope.evidence_id,
-        approval_manifest_evidence_id: approval.request.manifest_evidence_id,
+        approval_manifest_evidence_id: approval.request["Approval record"],
         scenario_set_id: frozen.compiled.scenario_set_id,
         repository_snapshot_evidence_id: verificationLink.snapshotEnvelope.evidence_id,
         commit_sha: verificationLink.snapshot.resolved_sha,

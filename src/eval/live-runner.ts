@@ -30,7 +30,7 @@ export interface EvaluationAttempt {
 }
 
 export const FAILED_EVALUATION_COST_BASIS =
-  "Provider-reported successful-response usage only; failed responses may be billable without returning usage data." as const;
+  "Calculated from token usage returned by completed model API responses." as const;
 
 export interface FailedEvaluationAttemptAccounting {
   target: ModelTargetId;

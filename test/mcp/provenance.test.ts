@@ -273,23 +273,38 @@ test("prepares a content-addressed approval manifest with exact workload and pro
       verified_build: verification.verified_build,
     });
     const request = prepared.result.approval_request;
+    const loaded = await loadMigrationEvaluationApproval(store, request);
     const approvalText = renderApprovalMarkdown(request);
-    assert.ok(approvalText.includes("30 baseline trials + conditional 30 candidate trials"));
-    assert.ok(approvalText.includes("60 maximum trials"));
-    assert.ok(approvalText.includes("180 requests"));
-    assert.ok(approvalText.includes("Provider credits"));
-    assert.ok(approvalText.includes("Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox."));
-    assert.ok(approvalText.includes("cannot change repository, customer data, deployment, or migration"));
-    assert.ok(approvalText.includes(request.manifest_evidence_id));
+    assert.ok(approvalText.includes("OrderDesk adversarial safety suite"));
+    assert.ok(approvalText.includes("180 model API requests"));
+    assert.ok(approvalText.includes("Baseline runs first; replacement runs only if baseline passes"));
+    assert.ok(approvalText.includes("Typecheck and test receipts passed structural validation"));
+    assert.ok(approvalText.includes(`Commit ${COMMIT}`));
+    assert.ok(approvalText.includes("Output: Immutable evaluation evidence"));
+    assert.ok(approvalText.includes("Constraints: No changes to customer data, source code, deployments, or migrations"));
+    assert.equal(/provider credits|actual charges|not an invoice/i.test(approvalText), false);
+    assert.ok(approvalText.includes(request["Approval record"]));
     assert.ok(approvalText.length < 20_000);
     assert.equal(/observations|attempts|internal_report_digest/.test(approvalText), false);
-    assert.match(request.manifest_evidence_id, /^sha256:[a-f0-9]{64}$/);
+    assert.match(request["Approval record"], /^sha256:[a-f0-9]{64}$/);
+    assert.equal("manifest" in request, false);
+    assert.deepEqual(Object.keys(request), [
+      "Decision",
+      "Models",
+      "Code version",
+      "Test plan",
+      "Request cap",
+      "Checks completed",
+      "Output",
+      "Constraints",
+      "Approval record",
+    ]);
     assert.equal(prepared.envelope.artifact_type, "migration-evaluation-approval");
     assert.deepEqual(prepared.envelope.parent_ids, [
       compiled.compiled_scenario_evidence_id,
       verification.verification_evidence_id,
     ]);
-    assert.deepEqual(request.manifest.workload, {
+    assert.deepEqual(loaded.manifest.workload, {
       cases: 10,
       trials_per_case: 3,
       baseline_trials: 30,
@@ -297,29 +312,31 @@ test("prepares a content-addressed approval manifest with exact workload and pro
       maximum_trials: 60,
       maximum_provider_requests: 180,
     });
-    assert.equal(request.manifest.baseline_target.display_name, "OpenAI GPT-5.6 Luna");
-    assert.equal(request.manifest.candidate_target.display_name, "Together AI GPT-OSS 20B");
-    assert.match(request.manifest.approval_boundary, /TrueForge supplies the actual human approval boundary/);
-    const loaded = await loadMigrationEvaluationApproval(store, request);
+    assert.equal(loaded.manifest.baseline_target.display_name, "OpenAI GPT-5.6 Luna");
+    assert.equal(loaded.manifest.candidate_target.display_name, "Together AI GPT-OSS 20B");
+    assert.match(loaded.manifest.approval_boundary, /TrueForge supplies the actual human approval boundary/);
     assert.equal(loaded.manifest.commit_sha, COMMIT);
     assert.equal(loaded.evidence.frozen.envelope.evidence_id, compiled.compiled_scenario_evidence_id);
 
+    const alteredVisibleRequests = [
+      { ...request, Decision: "Run something else" },
+      { ...request, Models: "Current: OpenAI GPT-5.6 Luna. Proposed replacement: Forged target." },
+      { ...request, "Code version": "Commit forged" },
+      { ...request, "Test plan": "One easy case" },
+      { ...request, "Request cap": "Unlimited requests" },
+      { ...request, "Checks completed": "Checks skipped" },
+      { ...request, Output: "No evidence" },
+      { ...request, Constraints: "May change production" },
+    ];
+    for (const altered of alteredVisibleRequests) {
+      await assert.rejects(loadMigrationEvaluationApproval(store, altered));
+    }
     await assert.rejects(
       loadMigrationEvaluationApproval(store, {
         ...request,
-        manifest: {
-          ...request.manifest,
-          candidate_target: { ...request.manifest.candidate_target, display_name: "Forged target" },
-        },
+        "Approval record": verification.verification_evidence_id,
       }),
-      /does not match immutable evidence/,
-    );
-    await assert.rejects(
-      loadMigrationEvaluationApproval(store, {
-        ...request,
-        manifest_evidence_id: verification.verification_evidence_id,
-      }),
-      /invalid parent links/,
+      /migration-evaluation-approval|invalid parent links/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -479,7 +496,7 @@ test("persists a human-readable terminal baseline rejection without running the 
     assert.equal(candidateCalls, 0);
 
     const terminal = await persistBaselineRejectedEvaluation(store, {
-      approval_manifest_evidence_id: approval.result.approval_request.manifest_evidence_id,
+      approval_manifest_evidence_id: approval.result.approval_request["Approval record"],
       scenario_evidence_id: compiled.compiled_scenario_evidence_id,
       verification_evidence_id: verification.verification_evidence_id,
       scenario_set_id: compiled.scenario_set_id,
@@ -492,7 +509,7 @@ test("persists a human-readable terminal baseline rejection without running the 
     });
     assert.equal(terminal.envelope.artifact_type, "baseline-rejected-evaluation");
     assert.deepEqual(terminal.envelope.parent_ids, [
-      approval.result.approval_request.manifest_evidence_id,
+      approval.result.approval_request["Approval record"],
       compiled.compiled_scenario_evidence_id,
       verification.verification_evidence_id,
     ]);
@@ -519,7 +536,7 @@ test("persists a human-readable terminal baseline rejection without running the 
     assert.equal(terminal.payload.raw_details.internal_report_digest, failure.internal_report_digest);
     assert.equal(
       terminal.payload.raw_details.approval_manifest_evidence_id,
-      approval.result.approval_request.manifest_evidence_id,
+      approval.result.approval_request["Approval record"],
     );
     assert.equal(
       terminal.payload.raw_details.baseline_preflight.baseline.evaluation_profile.profile_version,
@@ -604,7 +621,7 @@ test("returns a bounded completed report while immutable evidence retains the ra
     if (comparison.kind !== "completed") throw new Error("Expected a completed comparison");
 
     const persisted = await persistCompletedMigrationEvaluation(store, {
-      approval_manifest_evidence_id: approval.result.approval_request.manifest_evidence_id,
+      approval_manifest_evidence_id: approval.result.approval_request["Approval record"],
       scenario_evidence_id: compiled.compiled_scenario_evidence_id,
       verification_evidence_id: verification.verification_evidence_id,
       scenario_set_id: compiled.scenario_set_id,
@@ -617,7 +634,7 @@ test("returns a bounded completed report while immutable evidence retains the ra
     });
     assert.equal(persisted.envelope.artifact_type, "migration-evaluation");
     assert.deepEqual(persisted.envelope.parent_ids, [
-      approval.result.approval_request.manifest_evidence_id,
+      approval.result.approval_request["Approval record"],
       compiled.compiled_scenario_evidence_id,
       verification.verification_evidence_id,
     ]);
@@ -637,7 +654,7 @@ test("returns a bounded completed report while immutable evidence retains the ra
     assert.equal(persisted.payload.raw_details.internal_report_digest, comparison.verdict.evidence_id);
     assert.equal(
       persisted.payload.raw_details.approval_manifest_evidence_id,
-      approval.result.approval_request.manifest_evidence_id,
+      approval.result.approval_request["Approval record"],
     );
     assert.equal(
       persisted.payload.raw_details.comparison.baseline.evaluation_profile.profile_version,
@@ -787,7 +804,7 @@ test("MCP persists failed paid evaluation accounting with the completed baseline
     const artifact = await store.read(evidenceId);
     assert.equal(artifact.artifact_type, "evaluation-error");
     assert.deepEqual(artifact.parent_ids, [
-      approval.result.approval_request.manifest_evidence_id,
+      approval.result.approval_request["Approval record"],
       compiled.compiled_scenario_evidence_id,
       verification.verification_evidence_id,
     ]);
@@ -798,7 +815,7 @@ test("MCP persists failed paid evaluation accounting with the completed baseline
       scenario_set_id: compiled.scenario_set_id,
       repository_snapshot_evidence_id: repository.repository_snapshot_evidence_id,
       commit_sha: COMMIT,
-      approval_manifest_evidence_id: approval.result.approval_request.manifest_evidence_id,
+      approval_manifest_evidence_id: approval.result.approval_request["Approval record"],
       attempt_accounting: accounting,
     });
   } finally {
