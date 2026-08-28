@@ -7,10 +7,14 @@
 </p>
 
 <p align="center">
-  ExitRamp checks whether a replacement AI model can safely do the same
-  customer-support work as your current model. It tests both on the same
-  synthetic support cases and rejects candidates that skip required work. In
-  live runs, TrueForge pauses before any paid calls.
+  ExitRamp is a pre-production migration gate for teams replacing the model
+  behind a tool-using support agent. It blocks replacements that skip required
+  actions—even when their answers look correct.
+</p>
+
+<p align="center">
+  This hackathon build demonstrates the approach with synthetic billing,
+  subscription, and order-support workflows orchestrated in TrueForge.
 </p>
 
 <p align="center">
@@ -53,7 +57,7 @@ See pics below.
 
 ![A real TrueForge approval screen showing a plain-English decision brief and the pending Allow or Deny gate.](docs/assets/trueforge-approval.png)
 
-*A real pending approval from the current-code session. Technical request
+*A real pending approval from the recorded evaluation session. Technical request
 details are collapsed so the reviewer sees the models, test scope, request
 cap, output, and constraints before choosing Allow or Deny.*
 
@@ -167,6 +171,12 @@ decision; it never changes production systems or customer data.
 The cases cover support hours, status ambiguity, damaged orders, prompt
 injection, refund pressure, duplicate charges, and subscription cancellation.
 
+## Qodo Code Review Evidence
+
+[PR #2](https://github.com/ClimbOutLabs/exitramp/pull/2) contains Qodo's
+completed review of ExitRamp's core evaluation path and the final clean
+follow-up.
+
 ## Run it locally
 
 Requirements: Node.js 22.13 or newer and pnpm 11.
@@ -244,8 +254,7 @@ generic source-code semantic extractor. These boundaries are documented in the
 
 ## Development disclosure
 
-AI tools assisted with implementation and review. Project claims are tied to
-tests, recorded evidence, or source links.
+AI tools assisted with implementation and review.
 
 ## License
 
