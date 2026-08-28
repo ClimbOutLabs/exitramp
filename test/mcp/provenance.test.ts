@@ -170,7 +170,13 @@ test("marks timestamped evidence-writing MCP tools as non-idempotent", () => {
   const server = buildMcpServer({ evidence_store: new EvidenceStore(".exitramp/test-evidence") });
   const registeredTools = (
     server as unknown as {
-      _registeredTools: Record<string, { annotations?: { idempotentHint?: boolean } }>;
+      _registeredTools: Record<string, {
+        annotations?: {
+          idempotentHint?: boolean;
+          readOnlyHint?: boolean;
+          destructiveHint?: boolean;
+        };
+      }>;
     }
   )._registeredTools;
 
@@ -182,6 +188,11 @@ test("marks timestamped evidence-writing MCP tools as non-idempotent", () => {
     assert.equal(registeredTools[name]?.annotations?.idempotentHint, false, name);
   }
   assert.equal(registeredTools.inspect_orderdesk_behavior?.annotations?.idempotentHint, true);
+  assert.equal(
+    registeredTools.prepare_migration_evaluation_approval?.annotations?.destructiveHint,
+    false,
+  );
+  assert.equal(registeredTools.run_migration_evaluation?.annotations?.destructiveHint, true);
 });
 
 test("approval-card references must exactly match their immutable artifacts", async () => {
@@ -280,10 +291,12 @@ test("prepares a content-addressed approval manifest with exact workload and pro
     assert.ok(approvalText.includes("Baseline runs first; replacement runs only if baseline passes"));
     assert.ok(approvalText.includes("Typecheck and test receipts passed structural validation"));
     assert.ok(approvalText.includes(`Commit ${COMMIT}`));
-    assert.ok(approvalText.includes("Output: Immutable evaluation evidence"));
-    assert.ok(approvalText.includes("Constraints: No changes to customer data, source code, deployments, or migrations"));
+    assert.ok(approvalText.includes("Immutable evaluation evidence"));
+    assert.ok(approvalText.includes("### Constraints\n\nNo changes to customer data, source code, deployments, or migrations"));
+    assert.ok(approvalText.includes("TrueForge's Allow/Deny gate"));
     assert.equal(/provider credits|actual charges|not an invoice/i.test(approvalText), false);
-    assert.ok(approvalText.includes(request["Approval record"]));
+    assert.equal(approvalText.includes(request["Approval record"]), false);
+    assert.equal(approvalText.includes("Approval record"), false);
     assert.ok(approvalText.length < 20_000);
     assert.equal(/observations|attempts|internal_report_digest/.test(approvalText), false);
     assert.match(request["Approval record"], /^sha256:[a-f0-9]{64}$/);
