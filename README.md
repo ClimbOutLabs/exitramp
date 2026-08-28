@@ -57,7 +57,7 @@ See pics below.
 
 ![A real TrueForge approval screen showing a plain-English decision brief and the pending Allow or Deny gate.](docs/assets/trueforge-approval.png)
 
-*A real pending approval from the current-code session. Technical request
+*A real pending approval from the recorded evaluation session. Technical request
 details are collapsed so the reviewer sees the models, test scope, request
 cap, output, and constraints before choosing Allow or Deny.*
 
