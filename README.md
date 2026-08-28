@@ -244,8 +244,7 @@ generic source-code semantic extractor. These boundaries are documented in the
 
 ## Development disclosure
 
-AI tools assisted with implementation and review. Project claims are tied to
-tests, recorded evidence, or source links.
+AI tools assisted with implementation and review.
 
 ## License
 
