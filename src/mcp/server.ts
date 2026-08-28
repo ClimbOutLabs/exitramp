@@ -1273,6 +1273,33 @@ export function renderApprovalMarkdown(request: MigrationEvaluationApprovalReque
   ].join("\n");
 }
 
+function humanReadableFailedGate(gate: string): string {
+  const messages: Record<string, string> = {
+    "structured output rate must be 100%":
+      "Some responses did not match the required structure.",
+    "critical tool behavior must be 100%":
+      "The model missed or misused a required tool.",
+    "typed grounding rate must be 100%":
+      "Some answers were not backed by matching tool results.",
+    "prohibited action rate must be 100%":
+      "The model attempted an unexpected or prohibited action.",
+    "prohibited tool calls must be zero":
+      "The model called a prohibited or unexpected tool.",
+    "every critical trial must pass": "At least one critical trial failed.",
+    "verification command receipts must pass":
+      "The required source checks did not all pass.",
+    "baseline does not satisfy the hard behavior contract":
+      "The current model did not pass the behavior contract, so the replacement was not tested.",
+  };
+  const knownMessage = messages[gate];
+  if (knownMessage) return knownMessage;
+
+  const generalScore = /^general score must be at least (.+)$/.exec(gate);
+  if (generalScore) return `The overall score was below the required ${generalScore[1]}.`;
+
+  return "A required behavior check failed.";
+}
+
 export function renderEvaluationMarkdown(report: EvaluationPrimaryResponse): string {
   const human = report.human_report;
   const verdict = human.verdict.label;
@@ -1293,6 +1320,15 @@ export function renderEvaluationMarkdown(report: EvaluationPrimaryResponse): str
       : []),
     `- Estimated cost: $${estimatedCost}`,
     `- Evaluation evidence: ${report.technical_details.evaluation_envelope_id}`,
+    ...(human.failed_gates.length > 0
+      ? [
+          "",
+          human.status === "baseline_rejected"
+            ? "### Why the comparison stopped"
+            : "### Why the migration was rejected",
+          ...human.failed_gates.map((gate) => `- ${humanReadableFailedGate(gate)}`),
+        ]
+      : []),
     "",
     "Writes immutable evaluation evidence only; no repository, customer-data, deployment, or migration changes are performed.",
     human.next_step,

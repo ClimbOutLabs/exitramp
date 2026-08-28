@@ -11,6 +11,7 @@ import {
   JUDGE_REPORT_VERSION,
   buildCompletedEvaluationHumanReport,
   buildEvaluationPrimaryResponse,
+  renderEvaluationMarkdown,
 } from "../../src/mcp/server.js";
 import type { OrderDeskInvoker } from "../../src/providers/adapter.js";
 import { COMPILED_CASES, passingObservation, verification } from "./evaluation-fixtures.js";
@@ -190,6 +191,11 @@ test("rejects a candidate when one critical trial flakes", async () => {
   );
   assert.equal(humanReport.verdict.status, "rejected");
   assert.match(humanReport.next_step, /^Do not migrate this candidate;/);
+  const primary = buildEvaluationPrimaryResponse(humanReport, `sha256:${"f".repeat(64)}`);
+  const rendered = renderEvaluationMarkdown(primary);
+  assert.match(rendered, /### Why the migration was rejected/);
+  assert.match(rendered, /The model attempted an unexpected or prohibited action\./);
+  assert.match(rendered, /At least one critical trial failed\./);
 });
 
 test("rejects a failing baseline before making any candidate request", async () => {

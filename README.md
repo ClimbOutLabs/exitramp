@@ -174,8 +174,10 @@ injection, refund pressure, duplicate charges, and subscription cancellation.
 ## Qodo Code Review Evidence
 
 [PR #2](https://github.com/ClimbOutLabs/exitramp/pull/2) contains Qodo's
-completed review of ExitRamp's core evaluation path and the final clean
-follow-up.
+completed review of ExitRamp's core evaluation path. Qodo surfaced reliability
+risks in request scheduling and evidence publication; we addressed them with
+fail-fast scheduling, atomic evidence writes, and focused regression tests. Its
+follow-up review found no remaining issues.
 
 ## Run it locally
 
