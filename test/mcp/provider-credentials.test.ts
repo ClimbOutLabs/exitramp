@@ -10,14 +10,11 @@ import {
 const OPENAI = "openai/gpt-5.6-luna" as const;
 const TOGETHER = "together/openai/gpt-oss-20b" as const;
 
-test("accepts both required provider credentials from the server environment", () => {
+test("provider credential validation accepts complete input and never exposes an available secret", () => {
   assert.doesNotThrow(() => assertProviderCredentials(
     [OPENAI, TOGETHER],
     { OPENAI_API_KEY: "openai-test-value", TOGETHER_API_KEY: "together-test-value" },
   ));
-});
-
-test("missing-credential errors never contain an available secret", () => {
   const availableSecret = "openai-test-secret";
   assert.throws(
     () => assertProviderCredentials(

@@ -9,7 +9,6 @@ import {
   type BehaviorSnapshot,
   type BehaviorSourceBinding,
   type EvalCase,
-  type ScenarioPlan,
   type ScenarioProposal,
   type ScenarioRepositoryBinding,
   type ScenarioSlot,

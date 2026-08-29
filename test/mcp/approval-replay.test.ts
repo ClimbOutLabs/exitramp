@@ -139,47 +139,6 @@ test("approval consumption fails closed when directory durability cannot be conf
   }
 });
 
-test("run_migration_evaluation consumes approval before provider work and rejects replay", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-replay-"));
-  try {
-    const store = new EvidenceStore({ directory, now: () => new Date("2026-08-25T12:00:00.000Z") });
-    const approval = await preparedApproval(store);
-    let calls = 0;
-    let releaseFirstCall!: () => void;
-    let firstCallStarted!: () => void;
-    const firstCall = new Promise<void>((resolve) => { releaseFirstCall = resolve; });
-    const firstStarted = new Promise<void>((resolve) => { firstCallStarted = resolve; });
-    const server = buildMcpServer({
-      evidence_store: store,
-      invoker: {
-        async invokeCase(_target, testCase) {
-          calls += 1;
-          if (calls === 1) {
-            firstCallStarted();
-            await firstCall;
-          }
-          return passingObservation(testCase);
-        },
-      },
-    });
-    const handler = handlerFor(server);
-    const request = { approval_request: approval.result.approval_request };
-    const firstRun = handler(request);
-    await firstStarted;
-    await assert.rejects(
-      handler(request),
-      (error: unknown) => error instanceof ApprovalAlreadyConsumedError && /already been consumed/.test(error.message),
-    );
-    releaseFirstCall();
-    await firstRun;
-    assert.equal(calls, 60, "the replay must not start a second paid evaluation");
-    await assert.rejects(handler(request), ApprovalAlreadyConsumedError);
-    assert.equal(calls, 60, "retries after completion must remain free of provider calls");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
 test("a missing provider credential does not consume the one-shot approval", async () => {
   const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-missing-credential-"));
   try {

@@ -3,7 +3,7 @@ import {
   bindOrderDeskBehaviorSnapshot,
   compileOrderDeskScenarioPlan,
 } from "../../src/eval/scenario-authoring.js";
-import { VERIFICATION_COMMAND_PLAN, verifyCommandReceipts } from "../../src/eval/verification.js";
+import { VERIFICATION_COMMAND_PLAN, verifySandboxReceipts } from "../../src/eval/verification.js";
 import type { EvalCase, Observation, ScenarioPlan, ScenarioSlot, SupportDecision, ToolResult } from "../../src/domain/schemas.js";
 
 const variants: Record<ScenarioSlot, string> = {
@@ -88,7 +88,15 @@ export function repeatedPassing(): Observation[] {
 }
 
 export function verification() {
-  return verifyCommandReceipts("commit-1", VERIFICATION_COMMAND_PLAN.map((command) => ({
-    command_id: command.id, command: command.command, commit_sha: "commit-1", exit_code: 0, timed_out: false,
+  return verifySandboxReceipts("commit-1", VERIFICATION_COMMAND_PLAN.map((command, index) => ({
+    sandbox_id: "v1:daytona:evaluation-fixture",
+    command_id: command.id,
+    command: command.command,
+    commit_sha: "commit-1",
+    exit_code: 0,
+    timed_out: false,
+    stdout_sha256: "a".repeat(64),
+    stderr_sha256: String(index + 1) + "b".repeat(63),
+    duration_ms: 100 + index,
   })));
 }

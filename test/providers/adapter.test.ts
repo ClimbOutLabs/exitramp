@@ -15,10 +15,6 @@ import {
   TOGETHER_GPT_OSS_CHAT_SETTINGS_V1,
 } from "../../src/providers/catalog.js";
 
-test("rejects provider targets outside the fixed catalog", () => {
-  assert.throws(() => getModelTarget("custom/attacker-model"), /Invalid option/);
-});
-
 test("fails before network access when a provider key is missing", async () => {
   const adapter = new LiveOrderDeskAdapter({
     environment: {},
@@ -45,7 +41,8 @@ test("disables SDK retries so a failed provider request cannot create hidden pai
   assert.equal(calls, 1);
 });
 
-test("uses the versioned provider-native profiles for every allowlisted target", () => {
+test("uses versioned profiles for the fixed provider catalog", () => {
+  assert.throws(() => getModelTarget("custom/attacker-model"), /Invalid option/);
   assert.deepEqual(
     getModelTarget("openai/gpt-5.6-luna").evaluation_profile,
     OPENAI_GPT_5_6_RESPONSES_SETTINGS_V1,

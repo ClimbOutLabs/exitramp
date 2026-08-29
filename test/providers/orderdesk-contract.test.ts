@@ -41,7 +41,7 @@ test("exposes billing and subscription behavior in the model contract", () => {
   });
 });
 
-test("queues duplicate-charge escalation with the exact reason", () => {
+test("enforces the published escalation-reason contract", () => {
   assert.deepEqual(
     executeOrderDeskTool({
       name: "escalate_ticket",
@@ -54,9 +54,6 @@ test("queues duplicate-charge escalation with the exact reason", () => {
       reason: "duplicate_charge",
     },
   );
-});
-
-test("rejects escalation reasons outside the published enum", () => {
   assert.deepEqual(
     executeOrderDeskTool({
       name: "escalate_ticket",

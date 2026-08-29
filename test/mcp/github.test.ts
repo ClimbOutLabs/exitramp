@@ -14,136 +14,106 @@ function fakeFetch(input: string | URL | Request): Promise<Response> {
     );
   }
   if (url.endsWith("/repos/acme/orderdesk/git/trees/tree-sha?recursive=1")) {
-    return Promise.resolve(
-      Response.json({
-        truncated: false,
-        tree: [
-          { path: "package.json", type: "blob", sha: "file-sha", size: 42 },
-          { path: "src", type: "tree", sha: "directory-sha" },
-        ],
-      }),
-    );
+    return Promise.resolve(Response.json({
+      truncated: false,
+      tree: [
+        { path: "package.json", type: "blob", sha: "file-sha", size: 42 },
+        { path: "src", type: "tree", sha: "directory-sha" },
+      ],
+    }));
   }
   return Promise.resolve(new Response(null, { status: 404 }));
 }
 
-test("creates an immutable, bounded repository snapshot", async () => {
-  const snapshot = await snapshotRepository("acme", "orderdesk", "main", {
-    fetch: fakeFetch as typeof fetch,
-  });
-
-  assert.equal(snapshot.resolved_sha, "commit-sha");
-  assert.equal(snapshot.default_branch, "main");
-  assert.equal(snapshot.tree_truncated, false);
-  assert.deepEqual(snapshot.files, [{ path: "package.json", sha: "file-sha", size: 42 }]);
-  assert.match(snapshot.snapshot_id, /^sha256:[a-f0-9]{64}$/);
-});
-
-test("snapshot identity covers the bounded file manifest", async () => {
-  const changedTreeFetch = (input: string | URL | Request): Promise<Response> => {
-    const url = String(input);
-    if (url.endsWith("/repos/acme/orderdesk/git/trees/tree-sha?recursive=1")) {
-      return Promise.resolve(
-        Response.json({
-          truncated: false,
-          tree: [{ path: "package.json", type: "blob", sha: "changed-file-sha", size: 42 }],
-        }),
-      );
-    }
-    return fakeFetch(input);
-  };
+test("creates an immutable bounded snapshot whose identity covers its file manifest", async () => {
   const original = await snapshotRepository("acme", "orderdesk", "main", {
     fetch: fakeFetch as typeof fetch,
   });
   const changed = await snapshotRepository("acme", "orderdesk", "main", {
-    fetch: changedTreeFetch as typeof fetch,
+    fetch: ((input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith("/repos/acme/orderdesk/git/trees/tree-sha?recursive=1")) {
+        return Promise.resolve(Response.json({
+          truncated: false,
+          tree: [{ path: "package.json", type: "blob", sha: "changed-file-sha", size: 42 }],
+        }));
+      }
+      return fakeFetch(input);
+    }) as typeof fetch,
   });
 
+  assert.equal(original.resolved_sha, "commit-sha");
+  assert.equal(original.default_branch, "main");
+  assert.equal(original.tree_truncated, false);
+  assert.deepEqual(original.files, [{ path: "package.json", sha: "file-sha", size: 42 }]);
+  assert.match(original.snapshot_id, /^sha256:[a-f0-9]{64}$/);
   assert.notEqual(original.snapshot_id, changed.snapshot_id);
 });
 
 test("rejects path-like repository input before making a request", async () => {
+  let requests = 0;
   await assert.rejects(
-    snapshotRepository("acme", "../private", "main", { fetch: fakeFetch as typeof fetch }),
+    snapshotRepository("acme", "../private", "main", {
+      fetch: (() => {
+        requests += 1;
+        return Promise.resolve(new Response(null, { status: 500 }));
+      }) as typeof fetch,
+    }),
     /Invalid GitHub repository/,
   );
+  assert.equal(requests, 0);
 });
 
-test("cancels a recursive tree body whose declared response is too large", async () => {
-  let cancelled = false;
-  const fetcher = (input: string | URL | Request): Promise<Response> => {
+test("bounds and releases GitHub response bodies before and during streaming", async () => {
+  let declaredCancelled = false;
+  const declaredTooLarge = (input: string | URL | Request): Promise<Response> => {
     const url = String(input);
-    if (url.endsWith("/repos/acme/orderdesk")) {
-      return Promise.resolve(Response.json({ default_branch: "main" }));
-    }
-    if (url.endsWith("/repos/acme/orderdesk/commits/main")) {
-      return Promise.resolve(
-        Response.json({ sha: "commit-sha", commit: { tree: { sha: "tree-sha" } } }),
-      );
-    }
-    if (url.endsWith("/repos/acme/orderdesk/git/trees/tree-sha?recursive=1")) {
-      const body = new ReadableStream<Uint8Array>({
-        cancel() {
-          cancelled = true;
-        },
-      });
-      return Promise.resolve(
-        new Response(body, {
-          headers: { "content-length": String(8 * 1024 * 1024 + 1) },
-        }),
-      );
-    }
-    return Promise.resolve(new Response(null, { status: 404 }));
+    if (!url.includes("/git/trees/")) return fakeFetch(input);
+    return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        declaredCancelled = true;
+      },
+    }), {
+      headers: { "content-length": String(8 * 1024 * 1024 + 1) },
+    }));
   };
-
   await assert.rejects(
-    snapshotRepository("acme", "orderdesk", "main", { fetch: fetcher as typeof fetch }),
+    snapshotRepository("acme", "orderdesk", "main", { fetch: declaredTooLarge as typeof fetch }),
     /response exceeds 8388608 byte limit/,
   );
-  assert.equal(cancelled, true);
-});
+  assert.equal(declaredCancelled, true);
 
-
-
-test("cancels a non-success response body before rejecting", async () => {
-  let cancelled = false;
-  const body = new ReadableStream<Uint8Array>({
-    cancel() {
-      cancelled = true;
-    },
-  });
-  const fetcher = (): Promise<Response> =>
-    Promise.resolve(new Response(body, { status: 403 }));
-
+  let nonSuccessCancelled = 0;
+  const nonSuccess = (): Promise<Response> => Promise.resolve(new Response(
+    new ReadableStream<Uint8Array>({
+      cancel() {
+        nonSuccessCancelled += 1;
+      },
+    }),
+    { status: 403 },
+  ));
   await assert.rejects(
-    snapshotRepository("acme", "orderdesk", "main", { fetch: fetcher as typeof fetch }),
+    snapshotRepository("acme", "orderdesk", "main", { fetch: nonSuccess as typeof fetch }),
     /GitHub API returned 403/,
   );
-  assert.equal(cancelled, true);
-});
-test("rejects a recursive tree after streaming beyond the response-byte limit", async () => {
-  const fetcher = (input: string | URL | Request): Promise<Response> => {
-    const url = String(input);
-    if (url.endsWith("/repos/acme/orderdesk")) {
-      return Promise.resolve(Response.json({ default_branch: "main" }));
-    }
-    if (url.endsWith("/repos/acme/orderdesk/commits/main")) {
-      return Promise.resolve(
-        Response.json({ sha: "commit-sha", commit: { tree: { sha: "tree-sha" } } }),
-      );
-    }
-    if (url.endsWith("/repos/acme/orderdesk/git/trees/tree-sha?recursive=1")) {
-      const oversizedBody = JSON.stringify({
-        truncated: false,
-        tree: [{ path: "large.bin", type: "blob", sha: "file-sha", size: 9 * 1024 * 1024 }],
-      });
-      return Promise.resolve(new Response(oversizedBody.padEnd(8 * 1024 * 1024 + 1, "x")));
-    }
-    return Promise.resolve(new Response(null, { status: 404 }));
-  };
+  assert.ok(nonSuccessCancelled > 0);
 
+  let streamedCancelled = false;
+  const streamedTooLarge = (input: string | URL | Request): Promise<Response> => {
+    const url = String(input);
+    if (!url.includes("/git/trees/")) return fakeFetch(input);
+    return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1));
+      },
+      cancel() {
+        streamedCancelled = true;
+      },
+    })));
+  };
   await assert.rejects(
-    snapshotRepository("acme", "orderdesk", "main", { fetch: fetcher as typeof fetch }),
+    snapshotRepository("acme", "orderdesk", "main", { fetch: streamedTooLarge as typeof fetch }),
     /response exceeds 8388608 byte limit/,
   );
+  assert.equal(streamedCancelled, true);
 });

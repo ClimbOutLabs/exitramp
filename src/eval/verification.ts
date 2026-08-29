@@ -13,23 +13,6 @@ export const VERIFICATION_COMMAND_PLAN = [
 export type VerificationCommandId = (typeof VERIFICATION_COMMAND_PLAN)[number]["id"];
 export type VerificationCommand = (typeof VERIFICATION_COMMAND_PLAN)[number];
 
-/**
- * The legacy receipt shape is retained for callers of the pure verifier.  New
- * MCP callers must use SandboxVerificationReceipt, which carries the sandbox
- * trace fields needed for structural provenance.
- */
-export interface VerificationReceipt {
-  command_id: string;
-  command: string;
-  commit_sha: string;
-  exit_code: number | null;
-  timed_out: boolean;
-  sandbox_id?: string;
-  stdout_sha256?: string;
-  stderr_sha256?: string;
-  duration_ms?: number;
-}
-
 const SHA256 = /^(?:sha256:)?[a-f0-9]{64}$/;
 
 export const SandboxVerificationReceiptSchema = z.object({
@@ -50,7 +33,7 @@ export interface VerificationReport {
   status: "verified" | "rejected";
   expected_commit_sha: string;
   command_plan: readonly VerificationCommand[];
-  receipts: readonly VerificationReceipt[];
+  receipts: readonly SandboxVerificationReceipt[];
   failed_gates: readonly string[];
   evidence_id: string;
   sandbox_id?: string;
@@ -60,7 +43,9 @@ function evidenceId(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 }
 
-function sortedReceipts(receipts: readonly VerificationReceipt[]): VerificationReceipt[] {
+function sortedReceipts(
+  receipts: readonly SandboxVerificationReceipt[],
+): SandboxVerificationReceipt[] {
   return [...receipts].sort((left, right) => {
     const byId = left.command_id.localeCompare(right.command_id);
     return byId !== 0 ? byId : left.command.localeCompare(right.command);
@@ -135,81 +120,5 @@ export function verifySandboxReceipts(
     failed_gates: failedGates,
     evidence_id: evidenceId(evidencePayload),
     ...(receipts.length > 0 ? { sandbox_id: receipts[0]!.sandbox_id } : {}),
-  };
-}
-
-/**
- * Validate receipts against the immutable command plan.
- *
- * The function is intentionally receipt-only: it trusts no caller-provided
- * "tests passed" flag and has no process, filesystem, or Daytona access. A
- * report is verified only when every planned command has exactly one receipt,
- * both the command and commit match, and the command completed successfully
- * without timing out.
- */
-export function verifyCommandReceipts(
-  expectedCommitSha: string,
-  receipts: readonly VerificationReceipt[],
-): VerificationReport {
-  const failures = new Set<string>();
-  const planById = new Map<string, VerificationCommand>(
-    VERIFICATION_COMMAND_PLAN.map((command) => [command.id, command]),
-  );
-  const seen = new Set<string>();
-
-  if (expectedCommitSha.trim().length === 0) {
-    failures.add("expected commit SHA is required");
-  }
-
-  for (const receipt of receipts) {
-    const planned = planById.get(receipt.command_id);
-    if (!planned) {
-      failures.add(`unknown receipt: ${receipt.command_id}`);
-      continue;
-    }
-
-    if (seen.has(receipt.command_id)) {
-      failures.add(`duplicate receipt: ${receipt.command_id}`);
-    }
-    seen.add(receipt.command_id);
-
-    if (receipt.command !== planned.command) {
-      failures.add(`command mismatch: ${receipt.command_id}`);
-    }
-    if (receipt.commit_sha !== expectedCommitSha) {
-      failures.add(`commit mismatch: ${receipt.command_id}`);
-    }
-    if (receipt.timed_out) {
-      failures.add(`command timed out: ${receipt.command_id}`);
-    }
-    if (receipt.exit_code === null) {
-      failures.add(`null exit code: ${receipt.command_id}`);
-    } else if (!Number.isInteger(receipt.exit_code) || receipt.exit_code < 0) {
-      failures.add(`invalid exit code: ${receipt.command_id}`);
-    } else if (receipt.exit_code !== 0) {
-      failures.add(`nonzero exit code: ${receipt.command_id}`);
-    }
-  }
-
-  for (const command of VERIFICATION_COMMAND_PLAN) {
-    if (!seen.has(command.id)) failures.add(`missing receipt: ${command.id}`);
-  }
-
-  const failedGates = [...failures].sort((left, right) => left.localeCompare(right));
-  const normalizedReceipts = sortedReceipts(receipts);
-  const evidencePayload = {
-    expected_commit_sha: expectedCommitSha,
-    command_plan: VERIFICATION_COMMAND_PLAN,
-    receipts: normalizedReceipts,
-    failed_gates: failedGates,
-  };
-
-  return {
-    status: failedGates.length === 0 ? "verified" : "rejected",
-    expected_commit_sha: expectedCommitSha,
-    command_plan: VERIFICATION_COMMAND_PLAN,
-    receipts: normalizedReceipts,
-    failed_gates: failedGates,
-    evidence_id: evidenceId(evidencePayload),
   };
 }

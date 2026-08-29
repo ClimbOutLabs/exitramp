@@ -250,6 +250,8 @@ export interface McpServerOptions {
   evidence_store?: EvidenceStore;
   /** Injectable evaluator for deterministic integration tests and local adapters. */
   invoker?: OrderDeskInvoker;
+  /** Injectable repository snapshot boundary for protocol-level tests. */
+  snapshot_repository?: typeof snapshotRepository;
   /** Resolve provider credentials from the server process at tool-call time. */
   provider_environment?: () => NodeJS.ProcessEnv;
 }
@@ -1369,6 +1371,7 @@ export function renderEvaluationErrorMarkdown(evaluationEvidenceId: string): str
 export function buildMcpServer(options: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: "exitramp", version: "0.1.0" });
   const evidenceStore = options.evidence_store ?? new EvidenceStore({});
+  const snapshotRepositoryForRequest = options.snapshot_repository ?? snapshotRepository;
   // Injected invokers are deterministic test/local seams and own their own
   // credential behavior. The production adapter is always checked here and
   // again immediately before the one-shot approval claim.
@@ -1401,7 +1404,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
     },
     async ({ owner, repository, ref }) => {
       const token = githubTokenForRepository(owner, repository);
-      const snapshot = await snapshotRepository(
+      const snapshot = await snapshotRepositoryForRequest(
         owner,
         repository,
         ref,

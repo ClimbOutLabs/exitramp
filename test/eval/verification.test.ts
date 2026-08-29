@@ -2,85 +2,120 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  SandboxVerificationReceiptSchema,
   VERIFICATION_COMMAND_PLAN,
-  type VerificationReceipt,
-  verifyCommandReceipts,
+  verifySandboxReceipts,
+  type SandboxVerificationReceipt,
 } from "../../src/eval/verification.js";
 
 const COMMIT = "abc123";
+const HASH = "a".repeat(64);
 
-function receipt(
-  commandId: string,
-  overrides: Partial<VerificationReceipt> = {},
-): VerificationReceipt {
-  const command = VERIFICATION_COMMAND_PLAN.find((item) => item.id === commandId)?.command ?? "pnpm unknown";
-  return {
-    command_id: commandId,
-    command,
+function receipts(): SandboxVerificationReceipt[] {
+  return VERIFICATION_COMMAND_PLAN.map((command, index) => ({
+    sandbox_id: "v1:daytona:verification-test",
+    command_id: command.id,
+    command: command.command,
     commit_sha: COMMIT,
     exit_code: 0,
     timed_out: false,
-    ...overrides,
-  };
+    stdout_sha256: HASH,
+    stderr_sha256: String(index + 1) + HASH.slice(1),
+    duration_ms: 100 + index,
+  }));
 }
 
-function passingReceipts(): VerificationReceipt[] {
-  return [receipt("typecheck"), receipt("test")];
-}
-
-test("verifies exactly the fixed command plan", () => {
-  const report = verifyCommandReceipts(COMMIT, passingReceipts());
-
+test("verifies exactly the fixed detailed sandbox receipt plan", () => {
+  const valid = receipts();
+  for (const receipt of valid) {
+    assert.equal(SandboxVerificationReceiptSchema.safeParse(receipt).success, true);
+  }
+  const report = verifySandboxReceipts(COMMIT, valid);
   assert.equal(report.status, "verified");
   assert.deepEqual(report.failed_gates, []);
-  assert.deepEqual(report.receipts.map((item) => item.command_id), ["test", "typecheck"]);
+  assert.equal(report.sandbox_id, "v1:daytona:verification-test");
+  assert.deepEqual(report.command_plan, VERIFICATION_COMMAND_PLAN);
+  assert.equal("attestation" in report, false);
   assert.match(report.evidence_id, /^sha256:[a-f0-9]{64}$/);
+
+  const schemaRejections = [
+    { ...valid[0], exit_code: -1 },
+    { ...valid[0], exit_code: 1.5 },
+    { ...valid[0], duration_ms: -1 },
+    { ...valid[0], stdout_sha256: "not-a-hash" },
+    { ...valid[0], extra: true },
+  ];
+  for (const candidate of schemaRejections) {
+    assert.equal(SandboxVerificationReceiptSchema.safeParse(candidate).success, false);
+  }
+
+  const rejectionCases: Array<{
+    label: string;
+    input: SandboxVerificationReceipt[];
+    failure: RegExp;
+    expectedCommit?: string;
+  }> = [
+    { label: "missing", input: valid.slice(0, 1), failure: /missing receipt: test/ },
+    { label: "duplicate", input: [...valid, valid[0]!], failure: /duplicate receipt: typecheck/ },
+    {
+      label: "unknown",
+      input: [{ ...valid[0]!, command_id: "lint" }, valid[1]!],
+      failure: /unknown receipt: lint/,
+    },
+    {
+      label: "nonzero",
+      input: [{ ...valid[0]!, exit_code: 1 }, valid[1]!],
+      failure: /nonzero exit code: typecheck/,
+    },
+    {
+      label: "null",
+      input: [{ ...valid[0]!, exit_code: null }, valid[1]!],
+      failure: /null exit code: typecheck/,
+    },
+    {
+      label: "timeout",
+      input: [{ ...valid[0]!, timed_out: true }, valid[1]!],
+      failure: /command timed out: typecheck/,
+    },
+    {
+      label: "commit mismatch",
+      input: [{ ...valid[0]!, commit_sha: "other" }, valid[1]!],
+      failure: /commit mismatch: typecheck/,
+    },
+    {
+      label: "command mismatch",
+      input: [{ ...valid[0]!, command: "pnpm lint" }, valid[1]!],
+      failure: /command mismatch: typecheck/,
+    },
+    {
+      label: "sandbox mismatch",
+      input: [valid[0]!, { ...valid[1]!, sandbox_id: "v1:daytona:other" }],
+      failure: /sandbox IDs do not match/,
+    },
+    {
+      label: "missing expected commit",
+      input: valid,
+      expectedCommit: " ",
+      failure: /expected commit SHA is required/,
+    },
+  ];
+  for (const candidate of rejectionCases) {
+    const rejected = verifySandboxReceipts(candidate.expectedCommit ?? COMMIT, candidate.input);
+    assert.equal(rejected.status, "rejected", candidate.label);
+    assert.ok(rejected.failed_gates.some((gate) => candidate.failure.test(gate)), candidate.label);
+  }
 });
 
-test("rejects missing, duplicate, and unknown receipts", () => {
-  const missing = verifyCommandReceipts(COMMIT, [receipt("typecheck")]);
-  assert.equal(missing.status, "rejected");
-  assert.ok(missing.failed_gates.includes("missing receipt: test"));
+test("verification evidence is stable across receipt ordering and sensitive to receipt content", () => {
+  const original = receipts();
+  const forward = verifySandboxReceipts(COMMIT, original);
+  const reversed = verifySandboxReceipts(COMMIT, [...original].reverse());
+  assert.equal(forward.evidence_id, reversed.evidence_id);
+  assert.deepEqual(forward.receipts, reversed.receipts);
 
-  const duplicate = verifyCommandReceipts(COMMIT, [receipt("typecheck"), receipt("typecheck"), receipt("test")]);
-  assert.ok(duplicate.failed_gates.includes("duplicate receipt: typecheck"));
-
-  const unknown = verifyCommandReceipts(COMMIT, [receipt("typecheck"), receipt("test"), receipt("lint")]);
-  assert.ok(unknown.failed_gates.includes("unknown receipt: lint"));
-});
-
-test("rejects nonzero and null exit codes", () => {
-  const nonzero = verifyCommandReceipts(COMMIT, [receipt("typecheck"), receipt("test", { exit_code: 1 })]);
-  assert.ok(nonzero.failed_gates.includes("nonzero exit code: test"));
-
-  const nullExit = verifyCommandReceipts(COMMIT, [receipt("typecheck"), receipt("test", { exit_code: null })]);
-  assert.ok(nullExit.failed_gates.includes("null exit code: test"));
-});
-
-test("rejects timed out or commit-mismatched receipts", () => {
-  const timedOut = verifyCommandReceipts(COMMIT, [receipt("typecheck"), receipt("test", { timed_out: true })]);
-  assert.ok(timedOut.failed_gates.includes("command timed out: test"));
-
-  const mismatched = verifyCommandReceipts(COMMIT, [
-    receipt("typecheck", { commit_sha: "other" }),
-    receipt("test"),
+  const changed = verifySandboxReceipts(COMMIT, [
+    { ...original[0]!, stdout_sha256: "b".repeat(64) },
+    original[1]!,
   ]);
-  assert.ok(mismatched.failed_gates.includes("commit mismatch: typecheck"));
-});
-
-test("evidence hash is stable when receipt order changes", () => {
-  const first = verifyCommandReceipts(COMMIT, passingReceipts());
-  const second = verifyCommandReceipts(COMMIT, passingReceipts().reverse());
-
-  assert.equal(first.evidence_id, second.evidence_id);
-});
-
-test("rejects a command receipt that does not match the fixed plan", () => {
-  const report = verifyCommandReceipts(COMMIT, [
-    receipt("typecheck", { command: "pnpm test" }),
-    receipt("test"),
-  ]);
-
-  assert.equal(report.status, "rejected");
-  assert.ok(report.failed_gates.includes("command mismatch: typecheck"));
+  assert.notEqual(forward.evidence_id, changed.evidence_id);
 });

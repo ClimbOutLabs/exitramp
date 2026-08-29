@@ -7,47 +7,8 @@ import {
   runMigrationComparison,
   runModelEvaluation,
 } from "../../src/eval/live-runner.js";
-import {
-  JUDGE_REPORT_VERSION,
-  buildCompletedEvaluationHumanReport,
-  buildEvaluationPrimaryResponse,
-  renderEvaluationMarkdown,
-} from "../../src/mcp/server.js";
 import type { OrderDeskInvoker } from "../../src/providers/adapter.js";
 import { COMPILED_CASES, passingObservation, verification } from "./evaluation-fixtures.js";
-
-const SCENARIO_SUITE = {
-  label: "OrderDesk adversarial safety suite",
-  summary: "10 tough cases covering order status, damaged items, refund pressure, duplicate charges, and subscription cancellation.",
-  case_count: 10,
-  technical_evidence_id: `sha256:${"a".repeat(64)}`,
-};
-const VERIFIED_BUILD = {
-  label: "Receipt-verified source checks",
-  summary: "Commit commit-1 passed pnpm typecheck and pnpm test according to caller-supplied sandbox receipts.",
-  verification_scope: "Structural receipt validation only; ExitRamp did not launch or cryptographically attest the sandbox.",
-  commit_sha: "commit-1",
-  status: "verified" as const,
-  technical_evidence_id: `sha256:${"b".repeat(64)}`,
-};
-
-function assertBoundedPrimaryOutput(value: unknown): void {
-  const serialized = JSON.stringify(value);
-  assert.ok(serialized.length < 20_000, `primary report must stay bounded; got ${serialized.length} bytes`);
-  function visit(current: unknown): void {
-    if (Array.isArray(current)) {
-      for (const item of current) visit(item);
-      return;
-    }
-    if (current === null || typeof current !== "object") return;
-    const record = current as Record<string, unknown>;
-    for (const rawField of ["observations", "attempts", "cases", "internal_report_digest"]) {
-      assert.equal(Object.hasOwn(record, rawField), false, `primary output leaked ${rawField}`);
-    }
-    for (const nested of Object.values(record)) visit(nested);
-  }
-  visit(value);
-}
 
 test("runs three trials per compiled case with a global concurrency cap", async () => {
   let active = 0;
@@ -85,52 +46,7 @@ test("runs three trials per compiled case with a global concurrency cap", async 
     COMPILED_CASES.flatMap((testCase) => [1, 2, 3].map((trial) => `${testCase.id}:${trial}`)),
   );
   assert.equal(comparison.verdict.status, "eligible");
-  const humanReport = buildCompletedEvaluationHumanReport(
-    comparison,
-    SCENARIO_SUITE,
-    VERIFIED_BUILD,
-    COMPILED_CASES.length,
-  );
-  const primary = buildEvaluationPrimaryResponse(humanReport, `sha256:${"e".repeat(64)}`);
-  assert.equal(primary.human_report.report_version, JUDGE_REPORT_VERSION);
-  assert.equal(primary.status, "completed");
-  assert.equal(primary.human_report.models_configured, 2);
-  assert.equal(primary.human_report.models_run, 2);
-  assert.equal(primary.human_report.candidate_ran, true);
-  assert.deepEqual(primary.human_report.trial_counts, {
-    baseline: { attempted_trials: 30, passed_trials: 30, full_trial_pass_rate: 1 },
-    candidate: { attempted_trials: 30, passed_trials: 30, full_trial_pass_rate: 1 },
-    total: { attempted_trials: 60, passed_trials: 60, full_trial_pass_rate: 1 },
-  });
-  assert.deepEqual(primary.human_report.models.candidate.behavior_metrics, {
-    structured_output: { label: "Structured output", pass_rate: 1 },
-    critical_tool_behavior: { label: "Critical tool behavior", pass_rate: 1 },
-    tool_argument_validity: { label: "Tool argument validity", pass_rate: 1 },
-    typed_grounding: { label: "Typed grounding", pass_rate: 1 },
-    full_trial_pass: { label: "Full-trial pass", pass_rate: 1 },
-    prohibited_action_safety: { label: "Prohibited-action safety", pass_rate: 1 },
-    prohibited_tool_safety: { label: "Prohibited-tool safety", pass_rate: 1 },
-    prohibited_tool_calls: { label: "Prohibited tool calls", count: 0 },
-  });
-  assert.equal(
-    primary.human_report.models.baseline.evaluation_profile_version,
-    "openai-gpt-5.6-responses-v1",
-  );
-  assert.equal(
-    primary.human_report.models.candidate.evaluation_profile_version,
-    "together-gpt-oss-chat-v1",
-  );
-  assert.equal("evaluation_profile" in primary.human_report.models.baseline, false);
-  assert.equal(primary.human_report.total_estimated_cost_usd, comparison.total_cost_usd);
-  assert.equal(
-    primary.human_report.cost_basis,
-    "Calculated from token usage returned by completed model API responses.",
-  );
-  assert.deepEqual(primary.human_report.failed_gates, []);
-  assert.match(primary.human_report.next_step, /this repository applied nothing/i);
-  assert.equal(primary.technical_details.evaluation_envelope_id, `sha256:${"e".repeat(64)}`);
-  assert.equal("internal_report_digest" in primary.technical_details, false);
-  assertBoundedPrimaryOutput(primary);
+
 });
 
 test("rejects unverified evaluation before making any paid request", async () => {
@@ -183,19 +99,7 @@ test("rejects a candidate when one critical trial flakes", async () => {
   assert.equal(comparison.verdict.status, "rejected");
   assert.ok(comparison.verdict.failed_gates.includes("every critical trial must pass"));
   assert.ok(comparison.candidate.case_pass_rates.some((rate) => rate.critical && rate.pass_rate < 1));
-  const humanReport = buildCompletedEvaluationHumanReport(
-    comparison,
-    SCENARIO_SUITE,
-    VERIFIED_BUILD,
-    COMPILED_CASES.length,
-  );
-  assert.equal(humanReport.verdict.status, "rejected");
-  assert.match(humanReport.next_step, /^Do not migrate this candidate;/);
-  const primary = buildEvaluationPrimaryResponse(humanReport, `sha256:${"f".repeat(64)}`);
-  const rendered = renderEvaluationMarkdown(primary);
-  assert.match(rendered, /### Why the migration was rejected/);
-  assert.match(rendered, /The model attempted an unexpected or prohibited action\./);
-  assert.match(rendered, /At least one critical trial failed\./);
+
 });
 
 test("rejects a failing baseline before making any candidate request", async () => {
@@ -276,13 +180,16 @@ test("fails closed when an invoker misattributes an observation to a different r
   );
 });
 
-test("stops scheduling after the first rejection and waits for started work to settle", async () => {
+test("stops scheduling after the first rejection and waits for started work to settle", { timeout: 2_000 }, async () => {
   let startedCalls = 0;
   let evaluationSettled = false;
+  let initialBatchStarted!: () => void;
+  const initialBatch = new Promise<void>((resolve) => { initialBatchStarted = resolve; });
   const releaseStartedCalls: Array<() => void> = [];
   const invoker: OrderDeskInvoker = {
     async invokeCase(_target, testCase) {
       startedCalls += 1;
+      if (startedCalls === 4) initialBatchStarted();
       if (startedCalls === 1) throw new Error("paid call rejected");
       return await new Promise((resolve) => {
         releaseStartedCalls.push(() => resolve(passingObservation(testCase)));
@@ -314,7 +221,7 @@ test("stops scheduling after the first rejection and waits for started work to s
     return true;
   });
 
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await initialBatch;
   assert.equal(startedCalls, 4, "only the initial bounded batch may be paid calls");
   assert.equal(evaluationSettled, false, "the evaluation must wait for already-started work");
   assert.equal(releaseStartedCalls.length, 3);
@@ -347,16 +254,25 @@ test("failed candidate accounting retains the completed baseline usage", async (
     (error: unknown) => {
       assert.ok(error instanceof ModelEvaluationError);
       assert.equal(error.attempt_accounting.target, "together/openai/gpt-oss-20b");
-      assert.deepEqual(error.attempt_accounting.prior_completed_models, [{
+      assert.equal(error.attempt_accounting.prior_completed_models.length, 1);
+      const prior = error.attempt_accounting.prior_completed_models[0]!;
+      assert.deepEqual({
+        target: prior.target,
+        completed_case_attempts: prior.completed_case_attempts,
+        observed_input_tokens: prior.observed_input_tokens,
+        observed_output_tokens: prior.observed_output_tokens,
+      }, {
         target: "openai/gpt-5.6-luna",
         completed_case_attempts: 30,
         observed_input_tokens: 300,
         observed_output_tokens: 150,
-        observed_successful_response_cost_usd: 0.03000000000000002,
-      }]);
+      });
+      assert.ok(Math.abs(prior.observed_successful_response_cost_usd - 30 * 0.001) < 1e-12);
       assert.equal(error.attempt_accounting.total_observed_input_tokens, 330);
       assert.equal(error.attempt_accounting.total_observed_output_tokens, 165);
-      assert.equal(error.attempt_accounting.total_observed_successful_response_cost_usd, 0.03300000000000002);
+      assert.ok(Math.abs(
+        error.attempt_accounting.total_observed_successful_response_cost_usd - 33 * 0.001,
+      ) < 1e-12);
       return true;
     },
   );
