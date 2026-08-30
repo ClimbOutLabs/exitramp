@@ -137,10 +137,10 @@ index 0000000..c534586
 +  );
 +}
 diff --git a/packages/frontend/src/index.css b/packages/frontend/src/index.css
-index d3a80c1..71dfa76 100644
+index d3a80c1..5e68b33 100644
 --- a/packages/frontend/src/index.css
 +++ b/packages/frontend/src/index.css
-@@ -59,0 +60,182 @@ body {
+@@ -59,0 +60,183 @@ body {
 +
 +/* Tool reviews use an audit-sheet treatment: exact facts first, decoration second. */
 +.human-tool-card {
@@ -224,21 +224,22 @@ index d3a80c1..71dfa76 100644
 +}
 +
 +.human-tool-card__facts {
-+  display: grid;
-+  grid-template-columns: repeat(2, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
 +  gap: 1px;
 +  margin: 0;
 +  background: var(--border, #e4e4e7);
 +}
 +
 +.human-tool-card__facts > div {
++  flex: 1 1 calc(50% - 0.5px);
 +  min-width: 0;
 +  padding: 0.72rem 0.9rem 0.78rem;
 +  background: var(--card-bg, #fff);
 +}
 +
-+.human-tool-card__fact--wide {
-+  grid-column: 1 / -1;
++.human-tool-card__facts > .human-tool-card__fact--wide {
++  flex-basis: 100%;
 +}
 +
 +.human-tool-card__facts dd {
@@ -313,8 +314,8 @@ index d3a80c1..71dfa76 100644
 +}
 +
 +@media (max-width: 36rem) {
-+  .human-tool-card__facts {
-+    grid-template-columns: 1fr;
++  .human-tool-card__facts > div {
++    flex-basis: 100%;
 +  }
 +
 +  .human-tool-card__payload-actions {
@@ -541,6 +542,26 @@ index 8a9fc8e..7c23d29 100644
 +++ b/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx
 @@ -14,0 +15 @@ export type ToolCallContentBlockProps = {
 +  displayMarkdown?: string;
+diff --git a/packages/trueforge-ui/src/containers/AssistantMessageContainer.tsx b/packages/trueforge-ui/src/containers/AssistantMessageContainer.tsx
+index 7b37e64..1e9625c 100644
+--- a/packages/trueforge-ui/src/containers/AssistantMessageContainer.tsx
++++ b/packages/trueforge-ui/src/containers/AssistantMessageContainer.tsx
+@@ -8,0 +9 @@ import { computeAgentStepsSplit } from '../utils/computeAgentStepsSplit.js';
++import { isMainChatToolCall } from '../utils/toolCallParsing.js';
+@@ -50 +51,4 @@ export function AssistantMessageContainer() {
+-  const { cutIndex, hasFinal, toolCount, thinkingCount } = computeAgentStepsSplit(parts, isMessageRunning);
++  const { cutIndex, hasFinal, thinkingCount } = computeAgentStepsSplit(parts, isMessageRunning);
++  const groupedToolCount = parts
++    .slice(0, cutIndex)
++    .filter(part => part.type === 'tool-call' && !isMainChatToolCall(part)).length;
+@@ -59,0 +64,4 @@ export function AssistantMessageContainer() {
++    if (part.type === 'tool-call' && isMainChatToolCall(part)) {
++      return null;
++    }
++
+@@ -83 +91 @@ export function AssistantMessageContainer() {
+-                  <AgentStepsContainer toolCount={toolCount} thinkingCount={thinkingCount} hasFinal={hasFinal}>
++                  <AgentStepsContainer toolCount={groupedToolCount} thinkingCount={thinkingCount} hasFinal={hasFinal}>
 diff --git a/packages/trueforge-ui/src/containers/ToolCallContainer.tsx b/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
 index 2fbf21d..e706d0c 100644
 --- a/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
@@ -591,7 +612,7 @@ index 2fbf21d..e706d0c 100644
 @@ -286 +302,0 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
 -  const resultDisplay = getToolResultContent(part.result);
 diff --git a/packages/trueforge-ui/src/utils/toolCallParsing.ts b/packages/trueforge-ui/src/utils/toolCallParsing.ts
-index 8cbf0f5..196f406 100644
+index 8cbf0f5..846ea04 100644
 --- a/packages/trueforge-ui/src/utils/toolCallParsing.ts
 +++ b/packages/trueforge-ui/src/utils/toolCallParsing.ts
 @@ -210 +210 @@ export function getJsonDisplayValue(content: string | undefined): {
@@ -624,6 +645,15 @@ index 8cbf0f5..196f406 100644
 +      isJson: display.isJson,
 +      ...(displayMarkdown === undefined ? {} : { displayMarkdown }),
 +    };
+@@ -234,0 +252,8 @@ export function getToolResultContent(content: unknown): {
++/**
++ * Keep user-facing approval and report cards in the message flow instead of
++ * hiding them in the collapsible Agent steps section.
++ */
++export function isMainChatToolCall(part: Pick<ToolCallMessagePartProps, 'status' | 'result'>): boolean {
++  return part.status?.type === 'requires-action' || getToolResultContent(part.result).displayMarkdown !== undefined;
++}
++
 diff --git a/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx b/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
 index 090fc91..e804c53 100644
 --- a/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
@@ -728,11 +758,101 @@ index 090fc91..e804c53 100644
 +    });
 +  });
 +
+diff --git a/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx b/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx
+index bf5b537..90ff9fb 100644
+--- a/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx
++++ b/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx
+@@ -5,0 +6 @@ import { describe, expect, it } from 'vitest';
++import type { ToolCallContentBlockProps } from '@/atoms/ToolCallContentBlock.js';
+@@ -6,0 +8 @@ import { AssistantMessageContainer } from '@/containers/AssistantMessageContaine
++import { SlotsProvider, type SlotOverrides } from '@/theme/SlotsProvider.js';
+@@ -9,2 +11,7 @@ import { RuntimeHarness } from './RuntimeHarness.js';
+-function renderMultiToolMessage(content: ThreadMessageLike['content'], isRunning = false) {
+-  const message: ThreadMessageLike = { role: 'assistant', content };
++function renderMultiToolMessage(
++  content: ThreadMessageLike['content'],
++  isRunning = false,
++  overrides?: SlotOverrides,
++  status?: ThreadMessageLike['status'],
++) {
++  const message: ThreadMessageLike = { role: 'assistant', content, ...(status ? { status } : {}) };
+@@ -12,3 +19,13 @@ function renderMultiToolMessage(content: ThreadMessageLike['content'], isRunning
+-    <RuntimeHarness messages={[message]} isRunning={isRunning}>
+-      <ThreadPrimitive.Messages>{() => <AssistantMessageContainer />}</ThreadPrimitive.Messages>
+-    </RuntimeHarness>,
++    <SlotsProvider overrides={overrides}>
++      <RuntimeHarness messages={[message]} isRunning={isRunning}>
++        <ThreadPrimitive.Messages>{() => <AssistantMessageContainer />}</ThreadPrimitive.Messages>
++      </RuntimeHarness>
++    </SlotsProvider>,
++  );
++}
++
++function createToolCallContentBlockProbe() {
++  return ({ title, content, displayMarkdown }: ToolCallContentBlockProps) => (
++    <div data-testid={`${title.toLowerCase()}-content-block`} data-display-markdown={displayMarkdown}>
++      {content}
++    </div>
+@@ -66,0 +84,52 @@ describe('AgentSteps grouping', () => {
++
++  it('keeps a readable result visible when Agent steps is collapsed', () => {
++    const ToolCallContentBlock = createToolCallContentBlockProbe();
++    renderMultiToolMessage(
++      [
++        { type: 'tool-call', toolCallId: 'ordinary', toolName: 'ordinary_tool', args: {}, result: 'checked' },
++        {
++          type: 'tool-call',
++          toolCallId: 'report',
++          toolName: 'run_migration_evaluation',
++          args: {},
++          result: { display_markdown: '## Migration report', report: 'rejected' },
++        },
++        { type: 'text', text: 'The migration was rejected.' },
++      ],
++      false,
++      { ToolCallContentBlock },
++      { type: 'complete', reason: 'stop' },
++    );
++
++    expect(screen.getByTestId('response-content-block')).toHaveAttribute(
++      'data-display-markdown',
++      '## Migration report',
++    );
++    expect(screen.getByText(/1 tool call/)).toBeInTheDocument();
++    expect(screen.queryByText('ordinary_tool')).not.toBeInTheDocument();
++    expect(screen.getByTestId('response-content-block')).toBeInTheDocument();
++  });
++
++  it('keeps a pending approval visible outside Agent steps', () => {
++    renderMultiToolMessage(
++      [
++        { type: 'tool-call', toolCallId: 'ordinary', toolName: 'ordinary_tool', args: {}, result: 'checked' },
++        {
++          type: 'tool-call',
++          toolCallId: 'approval',
++          toolName: 'run_migration_evaluation',
++          args: {},
++          approval: { id: 'approval-1', approved: undefined },
++          interrupt: { type: 'human', payload: {} },
++        },
++      ],
++      false,
++      undefined,
++      { type: 'requires-action', reason: 'tool-calls' },
++    );
++
++    expect(screen.getByRole('button', { name: 'Allow' })).toBeInTheDocument();
++    fireEvent.click(screen.getByText('Agent steps'));
++    expect(screen.queryByText('ordinary_tool')).not.toBeInTheDocument();
++    expect(screen.getByRole('button', { name: 'Allow' })).toBeInTheDocument();
++  });
 diff --git a/packages/trueforge-ui/test/utils/toolCallParsing.test.ts b/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
-index 1653bd5..98e6acf 100644
+index 1653bd5..f189e19 100644
 --- a/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
 +++ b/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
-@@ -105,0 +106,24 @@ describe('toolCallParsing', () => {
+@@ -8,0 +9 @@ import {
++  isMainChatToolCall,
+@@ -105,0 +107,35 @@ describe('toolCallParsing', () => {
 +  it('exposes only non-empty root display markdown from tool results', () => {
 +    expect(
 +      getToolResultContent(
@@ -755,6 +875,17 @@ index 1653bd5..98e6acf 100644
 +        metadata: { display_markdown: 'nested markdown' },
 +      }),
 +    ).not.toHaveProperty('displayMarkdown');
++  });
++
++  it('identifies only approval and root display-markdown calls as main-chat cards', () => {
++    expect(isMainChatToolCall({ status: { type: 'requires-action', reason: 'interrupt' }, result: undefined })).toBe(
++      true,
++    );
++    expect(isMainChatToolCall({ status: { type: 'complete' }, result: { display_markdown: '## Done' } })).toBe(true);
++    expect(
++      isMainChatToolCall({ status: { type: 'complete' }, result: { metadata: { display_markdown: 'hidden' } } }),
++    ).toBe(false);
++    expect(isMainChatToolCall({ status: { type: 'complete' }, result: { content: [{ text: 'Done' }] } })).toBe(false);
 +  });
 +
 diff --git a/packages/trueforge/src/apis/mcpServers.ts b/packages/trueforge/src/apis/mcpServers.ts

@@ -23,6 +23,11 @@ export const EXITRAMP_MCP_MANIFEST = {
 };
 const PAID_TOOL = "run_migration_evaluation";
 export const MANAGED_AGENT_MARKER = "ExitRamp managed agent manifest: exitramp-orderdesk/v1.";
+export const VERDICT_ONLY_RESPONSE_POLICY = [
+  "Result presentation:",
+  "- After an allowed run completes, return only the human-readable verdict from ExitRamp.",
+  "- Do not add first-person narration or recap approval, checks, execution, or tool chronology.",
+].join("\n");
 export const EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS = [
   { provider_name: "openai", header_name: "x-exitramp-openai-key" },
   { provider_name: "together", header_name: "x-exitramp-together-key" },
@@ -149,9 +154,14 @@ export async function loadAgentManifest(
   modelName?: string,
 ): Promise<AgentManifest> {
   const parsed = AgentManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
-  const manifest: AgentManifest = modelName === undefined
-    ? parsed
-    : { ...parsed, model: { ...parsed.model, name: modelName } };
+  const managedInstructions = parsed.instructions.includes(VERDICT_ONLY_RESPONSE_POLICY)
+    ? parsed.instructions
+    : `${parsed.instructions}\n\n${VERDICT_ONLY_RESPONSE_POLICY}`;
+  const manifest: AgentManifest = {
+    ...parsed,
+    instructions: managedInstructions,
+    ...(modelName === undefined ? {} : { model: { ...parsed.model, name: modelName } }),
+  };
   assertExactToolPolicy(manifest);
   if (!ManagedExecutionConfigSchema.safeParse(manifest.config).success) {
     throw new Error(

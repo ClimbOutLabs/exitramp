@@ -9,6 +9,7 @@ import {
   EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS,
   MANAGED_AGENT_MARKER,
   REQUIRED_EXITRAMP_TOOLS,
+  VERDICT_ONLY_RESPONSE_POLICY,
   loadAgentManifest,
   registerExitRampAgent,
   type JsonFetch,
@@ -83,6 +84,12 @@ test("checked-in agent binds the exact ExitRamp workflow and native paid-tool ga
   assert.match(
     manifest.instructions,
     /do not conclude that bash is missing and do not repeat the same failing call unchanged/,
+  );
+  assert.ok(manifest.instructions.endsWith(VERDICT_ONLY_RESPONSE_POLICY));
+  assert.match(manifest.instructions, /return only the human-readable verdict from ExitRamp/);
+  assert.match(
+    manifest.instructions,
+    /Do not add first-person narration or recap approval, checks, execution, or tool chronology/,
   );
   assert.deepEqual(manifest.config?.["sandbox"], {
     enabled: true,
