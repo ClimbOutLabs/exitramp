@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS,
   MANAGED_AGENT_MARKER,
   REQUIRED_EXITRAMP_TOOLS,
   loadAgentManifest,
@@ -17,6 +18,38 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+const CONNECTOR_PATH = "/api/v1/settings/mcp-servers/exitramp";
+const CONNECTOR_COLLECTION_PATH = "/api/v1/settings/mcp-servers";
+const DEFAULT_CONNECTOR_MANIFEST = {
+  type: "remote",
+  name: "exitramp",
+  url: "http://127.0.0.1:8788/mcp",
+  description: "ExitRamp model migration evaluation tools.",
+};
+
+function configuredConnector(manifest: Record<string, unknown> = DEFAULT_CONNECTOR_MANIFEST): unknown {
+  return {
+    data: {
+      name: "exitramp",
+      manifest,
+      auth_status: { status: "not_required" },
+    },
+  };
+}
+
+function handleConnectorBindingRequest(input: string | URL, init?: RequestInit): Response | undefined {
+  const pathname = new URL(String(input)).pathname;
+  const method = init?.method ?? "GET";
+  if (pathname === CONNECTOR_PATH && method === "GET") {
+    return jsonResponse(configuredConnector());
+  }
+  if (pathname === CONNECTOR_COLLECTION_PATH && method === "PUT") {
+    const request = JSON.parse(String(init?.body)) as { manifest: Record<string, unknown> };
+    return jsonResponse(configuredConnector(request.manifest));
+  }
+  return undefined;
 }
 
 test("checked-in agent binds the exact ExitRamp workflow and native paid-tool gate", async () => {
@@ -105,14 +138,27 @@ test("agent manifest rejects every additional or duplicate MCP binding", async (
   }
 });
 
-test("registration discovers the connector before creating the named agent", async () => {
+test("registration preserves the connector and binds provider settings before tool discovery", async () => {
   const calls: Array<{ method: string; pathname: string; body?: unknown }> = [];
+  const existingManifest = {
+    ...DEFAULT_CONNECTOR_MANIFEST,
+    auth: { type: "header", headers: { "x-existing": "[REDACTED]" } },
+    transport_options: { timeout_ms: 45_000 },
+    provider_credentials: [{ provider_name: "legacy", header_name: "x-legacy-key" }],
+  };
   const fetchImpl: JsonFetch = async (input, init) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     calls.push({ method, pathname: url.pathname, ...(body === undefined ? {} : { body }) });
 
+    if (url.pathname === CONNECTOR_PATH && method === "GET") {
+      return jsonResponse(configuredConnector(existingManifest));
+    }
+    if (url.pathname === CONNECTOR_COLLECTION_PATH && method === "PUT") {
+      const request = body as { manifest: Record<string, unknown> };
+      return jsonResponse(configuredConnector(request.manifest));
+    }
     if (url.pathname.endsWith("/settings/mcp-servers/exitramp/tools")) {
       return jsonResponse({ data: REQUIRED_EXITRAMP_TOOLS.map((name) => ({ name })) });
     }
@@ -136,16 +182,45 @@ test("registration discovers the connector before creating the named agent", asy
     name: "exitramp-orderdesk",
   });
   assert.deepEqual(calls.map(({ method, pathname }) => ({ method, pathname })), [
+    { method: "GET", pathname: CONNECTOR_PATH },
+    { method: "PUT", pathname: CONNECTOR_COLLECTION_PATH },
     { method: "GET", pathname: "/api/v1/settings/mcp-servers/exitramp/tools" },
     { method: "GET", pathname: "/api/v1/agents" },
     { method: "POST", pathname: "/api/v1/agents" },
   ]);
+  const bindingRequest = calls[1]?.body as { manifest: Record<string, unknown> };
+  assert.deepEqual(bindingRequest, {
+    manifest: {
+      ...existingManifest,
+      provider_credentials: EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS,
+    },
+  });
+  assert.equal("provider_credentials" in bindingRequest, false);
+});
+
+test("registration refuses to bind credentials to a different connector", async () => {
+  let calls = 0;
+  const fetchImpl: JsonFetch = async () => {
+    calls += 1;
+    return jsonResponse(configuredConnector({
+      ...DEFAULT_CONNECTOR_MANIFEST,
+      name: "not-exitramp",
+    }));
+  };
+
+  await assert.rejects(
+    registerExitRampAgent({ fetchImpl }),
+    /refusing to bind provider credentials to a different connector/,
+  );
+  assert.equal(calls, 1);
 });
 
 test("registration fails closed when the connector is incomplete", async () => {
   let calls = 0;
-  const fetchImpl: JsonFetch = async () => {
+  const fetchImpl: JsonFetch = async (input, init) => {
     calls += 1;
+    const connectorResponse = handleConnectorBindingRequest(input, init);
+    if (connectorResponse !== undefined) return connectorResponse;
     return jsonResponse({
       data: REQUIRED_EXITRAMP_TOOLS
         .filter((name) => name !== "run_migration_evaluation")
@@ -157,15 +232,17 @@ test("registration fails closed when the connector is incomplete", async () => {
     registerExitRampAgent({ fetchImpl }),
     /missing required tools: run_migration_evaluation/,
   );
-  assert.equal(calls, 1);
+  assert.equal(calls, 3);
 });
 
 test("registration refuses to overwrite an unrelated same-name agent", async () => {
   const manifest = await loadAgentManifest();
   let calls = 0;
-  const fetchImpl: JsonFetch = async (input) => {
+  const fetchImpl: JsonFetch = async (input, init) => {
     calls += 1;
     const pathname = new URL(String(input)).pathname;
+    const connectorResponse = handleConnectorBindingRequest(input, init);
+    if (connectorResponse !== undefined) return connectorResponse;
     if (pathname.endsWith("/settings/mcp-servers/exitramp/tools")) {
       return jsonResponse({ data: REQUIRED_EXITRAMP_TOOLS.map((name) => ({ name })) });
     }
@@ -182,7 +259,7 @@ test("registration refuses to overwrite an unrelated same-name agent", async () 
     registerExitRampAgent({ fetchImpl }),
     /not managed by ExitRamp; refusing to overwrite it/,
   );
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
 });
 
 test("registration upgrades an older managed agent that allowed alternate questions", async () => {
@@ -198,6 +275,8 @@ test("registration upgrades an older managed agent that allowed alternate questi
   const fetchImpl: JsonFetch = async (input, init) => {
     const pathname = new URL(String(input)).pathname;
     const method = init?.method ?? "GET";
+    const connectorResponse = handleConnectorBindingRequest(input, init);
+    if (connectorResponse !== undefined) return connectorResponse;
     if (pathname.endsWith("/settings/mcp-servers/exitramp/tools")) {
       return jsonResponse({ data: REQUIRED_EXITRAMP_TOOLS.map((name) => ({ name })) });
     }
@@ -231,6 +310,8 @@ test("registration safely reconciles a concurrent create conflict", async () => 
     const pathname = new URL(String(input)).pathname;
     const method = init?.method ?? "GET";
     methods.push(method);
+    const connectorResponse = handleConnectorBindingRequest(input, init);
+    if (connectorResponse !== undefined) return connectorResponse;
     if (pathname.endsWith("/settings/mcp-servers/exitramp/tools")) {
       return jsonResponse({ data: REQUIRED_EXITRAMP_TOOLS.map((name) => ({ name })) });
     }
@@ -258,5 +339,5 @@ test("registration safely reconciles a concurrent create conflict", async () => 
     id: "raced-agent",
     name: "exitramp-orderdesk",
   });
-  assert.deepEqual(methods, ["GET", "GET", "POST", "GET", "PUT"]);
+  assert.deepEqual(methods, ["GET", "PUT", "GET", "GET", "POST", "GET", "PUT"]);
 });

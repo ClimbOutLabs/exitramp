@@ -14,8 +14,34 @@ export const REQUIRED_EXITRAMP_TOOLS = [
 ] as const;
 
 const EXITRAMP_MCP_NAME = "exitramp";
+const EXITRAMP_MCP_URL = "http://127.0.0.1:8788/mcp";
 const PAID_TOOL = "run_migration_evaluation";
 export const MANAGED_AGENT_MARKER = "ExitRamp managed agent manifest: exitramp-orderdesk/v1.";
+export const EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS = [
+  { provider_name: "openai", header_name: "x-exitramp-openai-key" },
+  { provider_name: "together", header_name: "x-exitramp-together-key" },
+] as const;
+
+const ProviderCredentialBindingSchema = z.object({
+  provider_name: z.string().min(1),
+  header_name: z.string().min(1),
+}).strict();
+
+const McpServerManifestSchema = z.object({
+  type: z.literal("remote"),
+  name: z.string().min(1),
+  url: z.url(),
+  description: z.string().min(1),
+  provider_credentials: z.array(ProviderCredentialBindingSchema).optional(),
+}).passthrough();
+
+const ConfiguredMcpServerSchema = z.object({
+  name: z.string().min(1),
+  manifest: McpServerManifestSchema,
+}).passthrough();
+
+const McpServerResponseSchema = z.object({ data: ConfiguredMcpServerSchema });
+type ConfiguredMcpServer = z.infer<typeof ConfiguredMcpServerSchema>;
 
 const AgentManifestSchema = z.object({
   model: z.object({
@@ -170,6 +196,64 @@ async function listAgents(fetchImpl: JsonFetch, baseUrl: URL): Promise<Agent[]> 
   return AgentsResponseSchema.parse(payload).data;
 }
 
+function assertExitRampConnector(connector: ConfiguredMcpServer): void {
+  const connectorUrl = new URL(connector.manifest.url);
+  if (
+    connector.name !== EXITRAMP_MCP_NAME
+    || connector.manifest.name !== EXITRAMP_MCP_NAME
+    || connectorUrl.href !== EXITRAMP_MCP_URL
+  ) {
+    throw new Error(
+      `Expected the ${EXITRAMP_MCP_NAME} connector at ${EXITRAMP_MCP_URL}; refusing to bind provider credentials to a different connector.`,
+    );
+  }
+}
+
+function assertExactProviderCredentialBindings(connector: ConfiguredMcpServer): void {
+  const bindings = connector.manifest.provider_credentials;
+  if (
+    bindings?.length !== EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS.length
+    || !EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS.every((expected, index) => {
+      const actual = bindings[index];
+      return actual?.provider_name === expected.provider_name
+        && actual.header_name === expected.header_name;
+    })
+  ) {
+    throw new Error("TrueForge did not retain the required ExitRamp provider credential bindings.");
+  }
+}
+
+async function bindProviderCredentials(
+  fetchImpl: JsonFetch,
+  baseUrl: URL,
+): Promise<void> {
+  const connectorUrl = new URL(
+    `/api/v1/settings/mcp-servers/${EXITRAMP_MCP_NAME}`,
+    baseUrl,
+  );
+  const currentPayload = await requestJson(fetchImpl, connectorUrl);
+  const current = McpServerResponseSchema.parse(currentPayload).data;
+  assertExitRampConnector(current);
+
+  const manifest = {
+    ...current.manifest,
+    provider_credentials: EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS.map((binding) => ({
+      ...binding,
+    })),
+  };
+  const updatedPayload = await requestJson(
+    fetchImpl,
+    new URL("/api/v1/settings/mcp-servers", baseUrl),
+    {
+      method: "PUT",
+      body: JSON.stringify({ manifest }),
+    },
+  );
+  const updated = McpServerResponseSchema.parse(updatedPayload).data;
+  assertExitRampConnector(updated);
+  assertExactProviderCredentialBindings(updated);
+}
+
 async function updateAgent(
   fetchImpl: JsonFetch,
   baseUrl: URL,
@@ -197,6 +281,8 @@ export async function registerExitRampAgent(
   const fetchImpl = options.fetchImpl ?? fetch;
   const agentName = options.agentName ?? "exitramp-orderdesk";
   const manifest = await loadAgentManifest(options.manifestPath, options.modelName);
+
+  await bindProviderCredentials(fetchImpl, baseUrl);
 
   const toolsPayload = await requestJson(
     fetchImpl,
