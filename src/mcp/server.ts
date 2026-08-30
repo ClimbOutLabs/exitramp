@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
 import { mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
@@ -41,12 +42,80 @@ import {
   type ScenarioPlan,
 } from "../domain/schemas.js";
 import { canonicalJson } from "../domain/canonical.js";
-import { LiveOrderDeskAdapter, type OrderDeskInvoker } from "../providers/adapter.js";
+import {
+  LiveOrderDeskAdapter,
+  MissingProviderCredentialError,
+  type OrderDeskInvoker,
+} from "../providers/adapter.js";
 import { getModelTarget, MODEL_TARGETS, ModelTargetIdSchema, type ModelTargetId } from "../providers/catalog.js";
 import { TRIALS_PER_CASE } from "../eval/policy.js";
 import { RepositorySnapshotSchema, snapshotRepository, type RepositorySnapshot } from "./github.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "8788", 10);
+
+export const PROVIDER_CREDENTIAL_HEADERS = {
+  OPENAI_API_KEY: "x-exitramp-openai-key",
+  TOGETHER_API_KEY: "x-exitramp-together-key",
+} as const;
+
+const providerEnvironmentScope = new AsyncLocalStorage<NodeJS.ProcessEnv>();
+
+function providerCredentialOverrides(rawHeaders: readonly string[]): NodeJS.ProcessEnv {
+  const values = new Map<string, string>();
+  const acceptedHeaders = new Map<string, string>(
+    Object.entries(PROVIDER_CREDENTIAL_HEADERS).map(([environmentName, headerName]) => [
+      headerName,
+      environmentName,
+    ]),
+  );
+
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    const headerName = rawHeaders[index]?.toLowerCase();
+    if (!headerName) continue;
+    const environmentName = acceptedHeaders.get(headerName);
+    if (!environmentName) continue;
+    if (values.has(environmentName)) {
+      throw new Error("Duplicate ExitRamp provider credential header");
+    }
+    const value = rawHeaders[index + 1]?.trim();
+    if (!value) {
+      throw new Error("Empty ExitRamp provider credential header");
+    }
+    values.set(environmentName, value);
+  }
+
+  return Object.fromEntries(values);
+}
+
+export function providerEnvironmentFromHeaders(
+  rawHeaders: readonly string[],
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return { ...baseEnvironment, ...providerCredentialOverrides(rawHeaders) };
+}
+
+export function currentProviderEnvironment(): NodeJS.ProcessEnv {
+  return providerEnvironmentScope.getStore() ?? process.env;
+}
+
+function assertProviderCredentialsAvailable(targetIds: readonly ModelTargetId[]): void {
+  const environment = currentProviderEnvironment();
+  for (const targetId of targetIds) {
+    const environmentVariable = getModelTarget(targetId).api_key_env;
+    if (!environment[environmentVariable]) {
+      throw new MissingProviderCredentialError(environmentVariable);
+    }
+  }
+}
+
+export function withProviderEnvironmentFromHeaders<T>(
+  rawHeaders: readonly string[],
+  operation: () => T,
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+): T {
+  const environment = providerEnvironmentFromHeaders(rawHeaders, baseEnvironment);
+  return providerEnvironmentScope.run(environment, operation);
+}
 
 const EvidenceIdSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const EVALUATION_CASE_COUNT = 10 as const;
@@ -1346,6 +1415,13 @@ export function renderEvaluationErrorMarkdown(evaluationEvidenceId: string): str
   ].join("\n");
 }
 
+function cardMarkdown(markdown: string): string {
+  return markdown
+    .split("\n")
+    .filter((line) => !/^- (Approval record|Evaluation evidence):/.test(line))
+    .join("\n");
+}
+
 export function buildMcpServer(options: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: "exitramp", version: "0.1.0" });
   const evidenceStore = options.evidence_store ?? new EvidenceStore({});
@@ -1469,10 +1545,14 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       },
     },
     async (input) => {
+      if (options.invoker === undefined) {
+        assertProviderCredentialsAvailable([input.baseline_target, input.candidate_target]);
+      }
       const prepared = await prepareMigrationEvaluationApproval(evidenceStore, input);
+      const displayMarkdown = renderApprovalMarkdown(prepared.result.approval_request);
       return {
-        content: [{ type: "text", text: renderApprovalMarkdown(prepared.result.approval_request) }],
-        structuredContent: prepared.result,
+        content: [{ type: "text", text: displayMarkdown }],
+        structuredContent: { ...prepared.result, display_markdown: cardMarkdown(displayMarkdown) },
       };
     },
   );
@@ -1505,7 +1585,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
         comparison = await runMigrationComparison(
           manifest.baseline_target.id,
           manifest.candidate_target.id,
-          options.invoker ?? new LiveOrderDeskAdapter(),
+          options.invoker ?? new LiveOrderDeskAdapter({ environment: currentProviderEnvironment() }),
           frozen.compiled.cases,
           verification,
         );
@@ -1535,9 +1615,10 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
           verified_build: evaluationEvidence.verified_build,
           evaluation_evidence_id: evaluationArtifact.evidence_id,
         };
+        const displayMarkdown = renderEvaluationErrorMarkdown(evaluationArtifact.evidence_id);
         return {
-          content: [{ type: "text", text: renderEvaluationErrorMarkdown(evaluationArtifact.evidence_id) }],
-          structuredContent: result,
+          content: [{ type: "text", text: displayMarkdown }],
+          structuredContent: { ...result, display_markdown: cardMarkdown(displayMarkdown) },
         };
       }
       if (comparison.kind === "baseline_rejected") {
@@ -1557,9 +1638,10 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
           terminal.payload.human_report,
           terminal.envelope.evidence_id,
         );
+        const displayMarkdown = renderEvaluationMarkdown(result);
         return {
-          content: [{ type: "text", text: renderEvaluationMarkdown(result) }],
-          structuredContent: result,
+          content: [{ type: "text", text: displayMarkdown }],
+          structuredContent: { ...result, display_markdown: cardMarkdown(displayMarkdown) },
         };
       }
       const evaluationArtifact = await persistCompletedMigrationEvaluation(evidenceStore, {
@@ -1578,9 +1660,10 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
         evaluationArtifact.payload.human_report,
         evaluationArtifact.envelope.evidence_id,
       );
+      const displayMarkdown = renderEvaluationMarkdown(result);
       return {
-        content: [{ type: "text", text: renderEvaluationMarkdown(result) }],
-        structuredContent: result,
+        content: [{ type: "text", text: displayMarkdown }],
+        structuredContent: { ...result, display_markdown: cardMarkdown(displayMarkdown) },
       };
     },
   );
@@ -1636,7 +1719,17 @@ export function startMcpServer(port = PORT): void {
     }
     // MCP's structural request type is narrower than Node's IncomingMessage when
     // exactOptionalPropertyTypes is enabled, although this adapter targets it.
-    await nodeMcpHandler(request as Parameters<typeof nodeMcpHandler>[0], response);
+    let providerEnvironment: NodeJS.ProcessEnv;
+    try {
+      providerEnvironment = providerEnvironmentFromHeaders(request.rawHeaders);
+    } catch {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "invalid_provider_credentials" }));
+      return;
+    }
+    await providerEnvironmentScope.run(providerEnvironment, () =>
+      nodeMcpHandler(request as Parameters<typeof nodeMcpHandler>[0], response),
+    );
   });
 
   httpServer.listen(port, "127.0.0.1", () => {
