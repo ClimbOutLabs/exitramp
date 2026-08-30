@@ -3,13 +3,13 @@
 </h1>
 
 <p align="center">
-  <strong>Reject replacement models that sound right but fail to do the work.</strong>
+  <strong>Block model migrations that break workflow behavior.</strong>
 </p>
 
 <p align="center">
   ExitRamp is a pre-production migration gate for teams replacing the model
-  behind a tool-using support agent. It blocks replacements that skip required
-  actions—even when their answers look correct.
+  behind a tool-using support agent. It catches replacements that skip required
+  actions, misuse tools, or make claims their tool results do not support.
 </p>
 
 <p align="center">
@@ -27,31 +27,34 @@
 
 ## The problem
 
-A replacement model can be faster, cheaper, and perfectly formatted while
-quietly skipping the tools that retrieve facts or perform required work. In
-billing, subscription, and order-support workflows, that is not a style
+A replacement model can be faster, cheaper, and produce convincing answers
+while quietly skipping the tools needed to retrieve facts or perform required
+actions.
+
+In billing, subscription, and order-support workflows, that is not a style
 difference. It is a broken migration.
 
 ExitRamp tests the behavior that matters:
 
-- Did the model choose the required tool?
-- Were the exact arguments correct?
-- Does a matching typed tool result support the decision?
-- Did it avoid prohibited actions?
-- Did every critical trial pass?
+* Did the model choose the required tool?
+* Were the exact arguments correct?
+* Does a matching typed tool result support the decision?
+* Did it avoid prohibited actions?
+* Did every critical trial pass?
 
-For example, claiming that subscription <code>SUB-2001</code> was cancelled
-only passes after a matching <code>cancel_subscription</code> call returns a
-typed <code>cancelled</code> result. A convincing sentence is not proof.
+For example, a model can only claim that a subscription was cancelled after a
+matching <code>cancel_subscription</code> call returns a typed <code>cancelled</code> result.
+
+**A convincing answer is not proof.**
 
 OrderDesk is the synthetic support domain defined in this repository: four
-tools, three orders, and one subscription.
+tools, three orders, and one subscription. Its cases cover support hours,
+status ambiguity, damaged orders, prompt injection, refund pressure, duplicate
+charges, and subscription cancellation.
 
 ## See it run
 
 ExitRamp runs as an MCP server inside TrueForge.
-
-See pics below.
 
 ### Human approval before the paid run
 
@@ -61,55 +64,58 @@ See pics below.
 details are collapsed so the reviewer sees the models, test scope, request
 cap, output, and constraints before choosing Allow or Deny.*
 
-### See the migration decision
+### Migration decision
 
 ![A real TrueForge ExitRamp session rejecting a replacement model that failed the behavior contract.](docs/assets/trueforge-decision.png)
 
-*The baseline did the required work, the candidate did not, so ExitRamp
+*The baseline completed the required work. The candidate did not, so ExitRamp
 rejected the migration.*
 
-### Read the verdict
+### Judge report
 
 ![A real TrueForge ExitRamp judge report rejecting the candidate after 10 cases and 30 trials per model.](docs/assets/trueforge-results.jpg)
 
-*The report shows test coverage, failed gates, latency, and estimated API
-cost.*
+*The report shows test coverage, failed gates, latency, and estimated API cost.*
 
 ## Recorded evaluation
 
 ![The baseline passed 30 of 30 attempts; the candidate passed 2 of 30, made zero tool calls, and was rejected.](docs/assets/recorded-result.svg)
 
-| Historical fixed-suite run | Baseline | Candidate |
-| --- | ---: | ---: |
-| Model | <code>openai/gpt-5.6-luna</code> | <code>together/openai/gpt-oss-20b</code> |
-| Attempts passed | **30/30** | **2/30** |
-| Structured output | 30/30 (100%) | 28/30 (93.3%) |
-| Typed grounding | 30/30 (100%) | 2/30 (6.7%) |
-| Critical tool behavior | 27/27 (100%) | 0/27 (0%) |
-| Tool calls | Required work completed | **0** |
-| Estimated cost | $0.0131044 | $0.0011956 |
+| Historical fixed-suite run |                         Baseline |                                Candidate |
+| -------------------------- | -------------------------------: | ---------------------------------------: |
+| Model                      | <code>openai/gpt-5.6-luna</code> | <code>together/openai/gpt-oss-20b</code> |
+| Attempts passed            |                        **30/30** |                                 **2/30** |
+| Structured output          |                     30/30 (100%) |                            28/30 (93.3%) |
+| Typed grounding            |                     30/30 (100%) |                              2/30 (6.7%) |
+| Critical tool behavior     |                     27/27 (100%) |                                0/27 (0%) |
+| Tool calls                 |          Required work completed |                                    **0** |
+| Estimated cost             |                       $0.0131044 |                               $0.0011956 |
 
 Estimated cost is calculated from token usage returned by completed model API
 responses.
 
-**Recorded verdict: migration rejected.** The candidate ran about 71% faster at
-91% lower estimated cost, but it skipped required work. Behavior gates—not
-speed or cost—determine migration eligibility.
+**Recorded verdict: migration rejected.**
+
+The candidate was about 71% faster and 91% cheaper, but it skipped required
+work. Migration eligibility is determined by behavior gates, not speed or cost.
 
 <details>
+
 <summary><strong>Run provenance and claim boundary</strong></summary>
 
-The fixed synthetic OrderDesk run completed at
-<code>2026-08-26T06:34:31.508Z</code> on
+The fixed synthetic OrderDesk run completed at <code>2026-08-26T06:34:31.508Z</code> on
 [commit <code>6755771</code>](https://github.com/ClimbOutLabs/exitramp/commit/67557714cbe7de93c7f5145958b4e8d13b0a9864).
+
 It used ten cases and three trials per model.
 
-The retained run is identified by
-<code>sha256:2c3aef633013f893a290e9f040013a611df0d452a91cf4d4cf3db7d61c1b6f49</code>.
+The retained run is identified by <code>sha256:2c3aef633013f893a290e9f040013a611df0d452a91cf4d4cf3db7d61c1b6f49</code>.
+
 The raw envelope is not published in this repository; the evaluation report is
 its public summary. The metrics describe the linked historical commit, not
 later code changes. No customer, repository, deployment, or migration state
-changed. This is one stochastic run of one fixed synthetic suite. See the
+changed.
+
+This is one stochastic run of one fixed synthetic suite. See the
 [full evaluation report](docs/EVALUATION_REPORT.md) for methodology, cost
 basis, and claim boundaries.
 
@@ -121,169 +127,191 @@ basis, and claim boundaries.
 
 1. **Snapshot the source.** <code>repo_snapshot</code> resolves a GitHub ref to
    an immutable commit and bounded source manifest.
+
 2. **Bind the behavior.** <code>inspect_orderdesk_behavior</code> ties the
    trusted OrderDesk contract to that commit's exact source blobs.
-3. **Compile the suite.** A model proposes bounded coverage variants and
-   rationale; trusted code owns the executable prompts, expected tools, typed
+
+3. **Compile the suite.** A model can propose bounded coverage variants and
+   rationale. Trusted code owns the executable prompts, expected tools, typed
    facts, and pass/fail oracles.
+
 4. **Verify the source checks.** <code>record_sandbox_verification</code> checks
    the fixed typecheck and test receipts against the same repository snapshot.
-5. **Pause for approval.** TrueForge shows the human the exact models, request
-   cap, scenario suite, receipt-verified checks, and evidence lineage
+
+5. **Pause for approval.** TrueForge shows the reviewer the exact models,
+   request cap, scenario suite, receipt-verified checks, and evidence lineage
    before any paid request.
-6. **Evaluate safely.** The baseline runs first. A failing baseline stops the
-   candidate spend. SDK retries are disabled and concurrency is bounded.
+
+6. **Evaluate safely.** The baseline runs first. If it fails the hard contract,
+   ExitRamp stops before candidate spend begins. SDK retries are disabled and
+   concurrency is bounded.
+
 7. **Calculate the verdict.** Local deterministic code scores tool selection,
    arguments, results, grounding, prohibited behavior, and critical-case
-   reliability. Full traces are persisted; the user receives a compact
-   <code>judge-report-v1</code>.
+   reliability. Full traces are persisted, and the user receives a compact <code>judge-report-v1</code>.
 
 > **Models propose. ExitRamp verifies.** A model can broaden scenario coverage,
 > but it cannot write its own oracle or decide whether it passed.
 
-## What TrueForge does
+## TrueForge and ExitRamp
 
-| TrueForge harness | ExitRamp core |
-| --- | --- |
-| Orchestrates the live workflow and subagents | Binds behavior to an immutable repository snapshot |
-| Runs the fixed command plan in Daytona | Compiles the ten-case OrderDesk suite |
-| Pauses for explicit human approval | Invokes allowlisted model targets |
-| Preserves the live session and reconnect flow | Scores typed behavior and persists evidence |
+TrueForge provides the execution and approval harness. ExitRamp owns the
+migration contract, evaluation logic, and evidence.
 
-The approval is meaningful: it gates a bounded paid evaluation with named
-models and frozen inputs. ExitRamp then returns evidence for a human migration
-decision; it never changes production systems or customer data.
+| TrueForge harness                             | ExitRamp core                                      |
+| --------------------------------------------- | -------------------------------------------------- |
+| Orchestrates the live workflow and subagents  | Binds behavior to an immutable repository snapshot |
+| Runs the fixed command plan in Daytona        | Compiles the ten-case OrderDesk suite              |
+| Pauses for explicit human approval            | Invokes allowlisted model targets                  |
+| Preserves the live session and reconnect flow | Scores typed behavior and persists evidence        |
+
+The approval gates a bounded paid evaluation with named models and frozen
+inputs. ExitRamp returns evidence for a human migration decision. It does not
+change production systems or customer data.
 
 ## Implementation map
 
-| Capability | Source |
-| --- | --- |
-| Behavior-grounded ten-slot scenario compiler | [<code>src/eval/scenario-authoring.ts</code>](src/eval/scenario-authoring.ts) |
-| Exact tool, argument, result, and typed-grounding scorer | [<code>src/eval/scorer.ts</code>](src/eval/scorer.ts) |
-| Hard migration contract and three-trial policy | [<code>src/eval/policy.ts</code>](src/eval/policy.ts) |
-| Proof-gated customer reply renderer library | [<code>src/eval/response-renderer.ts</code>](src/eval/response-renderer.ts) |
-| Bounded live evaluation runner | [<code>src/eval/live-runner.ts</code>](src/eval/live-runner.ts) |
-| Content-addressed evidence store | [<code>src/eval/evidence-store.ts</code>](src/eval/evidence-store.ts) |
-| Receipt verification | [<code>src/eval/verification.ts</code>](src/eval/verification.ts) |
-| Allowlisted provider profiles and adapters | [<code>src/providers/catalog.ts</code>](src/providers/catalog.ts) · [<code>src/providers/adapter.ts</code>](src/providers/adapter.ts) |
-| Loopback MCP tools and approval manifest | [<code>src/mcp/server.ts</code>](src/mcp/server.ts) |
+| Capability                                                     | Source                                                                                                                                                                                                                            |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Behavior-grounded ten-slot scenario compiler                   | [<code>src/eval/scenario-authoring.ts</code>](src/eval/scenario-authoring.ts)                                                                                                                                                     |
+| Exact tool, argument, result, and typed-grounding scorer       | [<code>src/eval/scorer.ts</code>](src/eval/scorer.ts)                                                                                                                                                                             |
+| Hard migration contract and three-trial policy                 | [<code>src/eval/policy.ts</code>](src/eval/policy.ts)                                                                                                                                                                             |
+| Proof-gated customer reply renderer library                    | [<code>src/eval/response-renderer.ts</code>](src/eval/response-renderer.ts)                                                                                                                                                       |
+| Bounded live evaluation runner                                 | [<code>src/eval/live-runner.ts</code>](src/eval/live-runner.ts)                                                                                                                                                                   |
+| Content-addressed evidence store                               | [<code>src/eval/evidence-store.ts</code>](src/eval/evidence-store.ts)                                                                                                                                                             |
+| Receipt verification                                           | [<code>src/eval/verification.ts</code>](src/eval/verification.ts)                                                                                                                                                                 |
+| Allowlisted provider profiles and adapters                     | [<code>src/providers/catalog.ts</code>](src/providers/catalog.ts) · [<code>src/providers/adapter.ts</code>](src/providers/adapter.ts)                                                                                             |
+| Loopback MCP tools and approval manifest                       | [<code>src/mcp/server.ts</code>](src/mcp/server.ts)                                                                                                                                                                               |
 | TrueForge agent, sandbox receipts, and native approval binding | [<code>agents/exitramp.agent.json</code>](agents/exitramp.agent.json) · [<code>scripts/trueforge-verify.sh</code>](scripts/trueforge-verify.sh) · [<code>src/trueforge/register-agent.ts</code>](src/trueforge/register-agent.ts) |
 
-The cases cover support hours, status ambiguity, damaged orders, prompt
-injection, refund pressure, duplicate charges, and subscription cancellation.
-
-## Qodo Code Review Evidence
+## Qodo review
 
 [PR #2](https://github.com/ClimbOutLabs/exitramp/pull/2) contains Qodo's
-completed review of ExitRamp's core evaluation path. Qodo surfaced reliability
-risks in request scheduling and evidence publication; we addressed them with
-fail-fast scheduling, atomic evidence writes, and focused regression tests. Its
-follow-up review found no remaining issues.
+completed review of ExitRamp's core evaluation path.
+
+Qodo identified reliability risks in request scheduling and evidence
+publication. We addressed them with fail-fast scheduling, atomic evidence
+writes, and focused regression tests. Its follow-up review found no remaining
+issues.
 
 ## Run it locally
 
 Requirements: Node.js 22.13 or newer and pnpm 11.
 
-~~~powershell
+```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
 pnpm build
 pnpm demo:local
 pnpm demo:approval
-~~~
+```
 
 <code>pnpm demo:local</code> compiles and prints all ten prompts, then evaluates
 deterministic fixture trials. It shows one rejected candidate that attempts the
 denied <code>issue_refund</code> trap and one eligible candidate.
 
-The output is explicitly labeled <code>local-simulated</code>: it makes no
-provider, Daytona, or GitHub request and does not create evidence files.
+The output is explicitly labeled <code>local-simulated</code>. It makes no
+provider, Daytona, or GitHub requests and does not create evidence files.
 
 <code>pnpm demo:approval</code> prints the current human-readable approval
 request without making paid calls.
 
 ## Run the MCP server
 
-~~~powershell
+```bash
 pnpm mcp
-~~~
+```
 
-- Health: <code>http://127.0.0.1:8788/healthz</code>
-- MCP: <code>http://127.0.0.1:8788/mcp</code>
+* Health: <code>http://127.0.0.1:8788/healthz</code>
+* MCP: <code>http://127.0.0.1:8788/mcp</code>
 
 Register the MCP URL in TrueForge, then install the checked-in ExitRamp agent:
 
-~~~powershell
+```bash
 pnpm trueforge:setup
-~~~
+```
 
 The setup command checks that TrueForge can see all six ExitRamp tools, binds
 only those tools to the named <code>exitramp-orderdesk</code> agent, and places
-the paid comparison behind TrueForge's native Allow or Deny control. Start a
-new chat with that agent; existing chats keep the configuration they started
-with.
+the paid comparison behind TrueForge's native **Allow** or **Deny** control.
+
+Start a new chat with that agent after setup. Existing chats retain the
+configuration they started with.
+
+### Sandbox verification
 
 In the Daytona sandbox, the agent runs <code>scripts/trueforge-verify.sh</code>.
+
 The script checksum-verifies a pinned Node.js 22.13.0 toolchain, installs the
 locked dependencies, runs the fixed typecheck and test commands, and emits
-their measured receipts. It requires the Linux x86-64 sandbox used by the
-recorded workflow and outbound access to the Node.js and pnpm registries.
+their measured receipts.
 
-Then ask naturally:
+It requires the Linux x86-64 sandbox used by the recorded workflow and outbound
+access to the Node.js and pnpm registries.
 
-> Should we replace our current OrderDesk model,
-> <code>openai/gpt-5.6-luna</code>, with
-> <code>together/openai/gpt-oss-20b</code> using the current
-> <code>main</code> branch of <code>ClimbOutLabs/exitramp</code>? Do the setup,
+### Start a comparison
+
+Ask naturally:
+
+> Should we replace our current OrderDesk model, <code>openai/gpt-5.6-luna</code>, with <code>together/openai/gpt-oss-20b</code> using the current <code>main</code> branch of <code>ClimbOutLabs/exitramp</code>? Do the setup,
 > then let me review the exact comparison before either model is called.
 
 The live tool sequence is:
 
-~~~text
+```text
 repo_snapshot
   → inspect_orderdesk_behavior
   → compile_orderdesk_scenario_plan
   → sandbox bootstrap + scripts/trueforge-verify.sh
   → record_sandbox_verification
   → prepare_migration_evaluation_approval
-  → run_migration_evaluation call
-      ↳ [TrueForge native Allow or Deny before execution]
-~~~
+  → run_migration_evaluation
+      ↳ TrueForge native Allow or Deny before execution
+```
 
-The agent completes the source and sandbox checks in that first turn. Calling
-<code>run_migration_evaluation</code> creates the native approval card, and
+The agent completes the source and sandbox checks in that first turn.
+
+Calling <code>run_migration_evaluation</code> creates the native approval card.
 TrueForge intercepts the call before it reaches ExitRamp or either evaluated
-model provider. The user must choose Allow or Deny in the card; a chat reply is
-not approval.
+model provider.
 
-Live evaluation requires <code>OPENAI_API_KEY</code> and/or
-<code>TOGETHER_API_KEY</code> for the allowlisted targets. It runs 30 baseline
-attempts, then up to 30 candidate attempts. A failed baseline skips the
-candidate.
+The user must choose **Allow** or **Deny** in the card. A chat reply is not
+approval.
+
+### Live evaluation
+
+Live evaluation requires <code>OPENAI_API_KEY</code> and/or <code>TOGETHER_API_KEY</code> for the allowlisted targets.
+
+It runs 30 baseline attempts, then up to 30 candidate attempts. If the baseline
+fails, the candidate is skipped.
+
+### Evidence storage
 
 Set <code>EXITRAMP_EVIDENCE_DIR</code> to place immutable evidence on a local
-hard-link-capable filesystem. If <code>GITHUB_TOKEN</code> is configured, it is
-sent only for exact <code>owner/repository</code> entries in the comma-separated
-<code>EXITRAMP_ALLOWED_REPOS</code> allowlist; other snapshots are
+hard-link-capable filesystem.
+
+If <code>GITHUB_TOKEN</code> is configured, it is sent only for exact <code>owner/repository</code> entries in the comma-separated <code>EXITRAMP_ALLOWED_REPOS</code> allowlist. Other snapshots are
 unauthenticated.
 
 ## Safety by construction
 
-- Paid evaluation requires an exact, evidence-bound approval manifest.
-- Scenario authors choose only bounded variants and rationale; compiler-owned
+* Paid evaluation requires an exact, evidence-bound approval manifest.
+* Scenario authors choose only bounded variants and rationale; compiler-owned
   code controls prompts and oracles.
-- Tool results must exactly cover tool calls before typed facts can pass.
-- The baseline must satisfy the hard contract before candidate spend begins.
-- Failed concurrent batches stop scheduling new calls, settle started calls,
+* Tool results must exactly cover tool calls before typed facts can pass.
+* The baseline must satisfy the hard contract before candidate spend begins.
+* Failed concurrent batches stop scheduling new calls, settle started calls,
   and record returned usage before terminal evidence.
-- Evidence artifacts are content-addressed, tamper-detected, and published
+* Evidence artifacts are content-addressed, tamper-detected, and published
   atomically.
-- ExitRamp evaluates migration readiness. It has no production mutation path.
+* ExitRamp evaluates migration readiness. It has no production mutation path.
 
 Sandbox receipt verification is structural rather than cryptographic
 attestation. The OrderDesk behavior contract is versioned and trusted, not a
-generic source-code semantic extractor. These boundaries are documented in the
+generic source-code semantic extractor.
+
+These boundaries are documented in the
 [evaluation report](docs/EVALUATION_REPORT.md).
 
 ## Development disclosure
