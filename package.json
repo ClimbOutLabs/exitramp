@@ -14,7 +14,7 @@
     "demo:approval": "tsx src/demo/approval.ts",
     "demo:local": "tsx src/demo/local.ts",
     "mcp": "tsx src/mcp/server.ts",
-    "test": "tsx --test test/**/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 test/**/*.test.ts",
     "trueforge:runtime:install": "tsx scripts/trueforge-runtime.ts install",
     "trueforge:runtime:start": "tsx scripts/trueforge-runtime.ts start",
     "trueforge:runtime:status": "tsx scripts/trueforge-runtime.ts status",
