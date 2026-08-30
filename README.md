@@ -167,6 +167,7 @@ decision; it never changes production systems or customer data.
 | Receipt verification | [<code>src/eval/verification.ts</code>](src/eval/verification.ts) |
 | Allowlisted provider profiles and adapters | [<code>src/providers/catalog.ts</code>](src/providers/catalog.ts) · [<code>src/providers/adapter.ts</code>](src/providers/adapter.ts) |
 | Loopback MCP tools and approval manifest | [<code>src/mcp/server.ts</code>](src/mcp/server.ts) |
+| TrueForge agent, sandbox receipts, and native approval binding | [<code>agents/exitramp.agent.json</code>](agents/exitramp.agent.json) · [<code>scripts/trueforge-verify.sh</code>](scripts/trueforge-verify.sh) · [<code>src/trueforge/register-agent.ts</code>](src/trueforge/register-agent.ts) |
 
 The cases cover support hours, status ambiguity, damaged orders, prompt
 injection, refund pressure, duplicate charges, and subscription cancellation.
@@ -211,7 +212,31 @@ pnpm mcp
 - Health: <code>http://127.0.0.1:8788/healthz</code>
 - MCP: <code>http://127.0.0.1:8788/mcp</code>
 
-Register the MCP URL in TrueForge before starting the live workflow.
+Register the MCP URL in TrueForge, then install the checked-in ExitRamp agent:
+
+~~~powershell
+pnpm trueforge:setup
+~~~
+
+The setup command checks that TrueForge can see all six ExitRamp tools, binds
+only those tools to the named <code>exitramp-orderdesk</code> agent, and places
+the paid comparison behind TrueForge's native Allow or Deny control. Start a
+new chat with that agent; existing chats keep the configuration they started
+with.
+
+In the Daytona sandbox, the agent runs <code>scripts/trueforge-verify.sh</code>.
+The script checksum-verifies a pinned Node.js 22.13.0 toolchain, installs the
+locked dependencies, runs the fixed typecheck and test commands, and emits
+their measured receipts. It requires the Linux x86-64 sandbox used by the
+recorded workflow and outbound access to the Node.js and pnpm registries.
+
+Then ask naturally:
+
+> Evaluate whether we should replace our current OrderDesk model,
+> <code>openai/gpt-5.6-luna</code>, with
+> <code>together/openai/gpt-oss-20b</code> using the current
+> <code>main</code> branch of <code>ClimbOutLabs/exitramp</code>. Show me the
+> decision before any paid comparison starts.
 
 The live tool sequence is:
 
@@ -224,6 +249,9 @@ repo_snapshot
   → [TrueForge human approval]
   → run_migration_evaluation
 ~~~
+
+TrueForge intercepts the final tool call before it reaches ExitRamp. The user
+must choose Allow or Deny in that native card; a chat reply is not approval.
 
 Live evaluation requires <code>OPENAI_API_KEY</code> and/or
 <code>TOGETHER_API_KEY</code> for the allowlisted targets. It runs 30 baseline
