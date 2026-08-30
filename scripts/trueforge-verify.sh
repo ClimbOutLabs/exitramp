@@ -53,8 +53,8 @@ if ! pnpm install --frozen-lockfile >"${LOG_DIR}/install.stdout" 2>"${LOG_DIR}/i
   echo "Dependency installation failed; logs remain in ${LOG_DIR}." >&2
   exit 1
 fi
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "Dependency installation changed tracked repository files; verification stopped." >&2
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo "Dependency installation changed repository contents; verification stopped." >&2
   exit 2
 fi
 
