@@ -17,6 +17,7 @@ import {
   acquireRuntimeStartReservation,
   assertManagedLayout,
   commandInvocation,
+  createRuntimeStateWriter,
   formatRuntimeStatus,
   installTrueForgeRuntime,
   launchManagedProcess,
@@ -30,6 +31,7 @@ import {
   verifyRuntimeInstallation,
   waitForManagedChildExit,
   waitForManagedChildHealth,
+  writeRuntimeStateJson,
 } from "../../src/trueforge/runtime.js";
 
 test("portable runtime paths stay inside ExitRamp-owned ignored directories", () => {
@@ -111,6 +113,153 @@ test("process cleanup cannot remove a newer manager's record", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("manager state writes are serialized when callers overlap", async () => {
+  let activeReplacements = 0;
+  let maximumActiveReplacements = 0;
+  let replacementCount = 0;
+  let markFirstReplacementStarted!: () => void;
+  const firstReplacementStarted = new Promise<void>(resolvePromise => {
+    markFirstReplacementStarted = resolvePromise;
+  });
+  let releaseFirst!: () => void;
+  const firstReplacementCanFinish = new Promise<void>(resolvePromise => {
+    releaseFirst = resolvePromise;
+  });
+  const writer = createRuntimeStateWriter("processes.json", {
+    write: async () => undefined,
+    replace: async () => {
+      replacementCount += 1;
+      activeReplacements += 1;
+      maximumActiveReplacements = Math.max(maximumActiveReplacements, activeReplacements);
+      if (replacementCount === 1) {
+        markFirstReplacementStarted();
+        await firstReplacementCanFinish;
+      }
+      activeReplacements -= 1;
+    },
+    remove: async () => undefined,
+    delay: async () => undefined,
+    temporaryId: (() => {
+      let id = 0;
+      return () => `write-${String(++id)}`;
+    })(),
+  });
+
+  const first = writer.write({ heartbeat: 1 });
+  const second = writer.write({ heartbeat: 2 });
+  await firstReplacementStarted;
+  assert.equal(replacementCount, 1);
+  releaseFirst();
+  await Promise.all([first, second, writer.flush()]);
+
+  assert.equal(maximumActiveReplacements, 1);
+  assert.equal(replacementCount, 2);
+});
+
+test("atomic manager state replacement retries transient Windows EPERM", async () => {
+  const delays: number[] = [];
+  let replacements = 0;
+  await writeRuntimeStateJson("processes.json", { heartbeat: 1 }, {
+    write: async () => undefined,
+    replace: async () => {
+      replacements += 1;
+      if (replacements < 3) {
+        const error = new Error("destination is temporarily open") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      }
+    },
+    remove: async () => undefined,
+    delay: async milliseconds => {
+      delays.push(milliseconds);
+    },
+    temporaryId: () => "retry-test",
+  });
+
+  assert.equal(replacements, 3);
+  assert.deepEqual(delays, [10, 25]);
+});
+
+test("atomic manager state replacement stops after the bounded retry budget", async () => {
+  const delays: number[] = [];
+  let replacements = 0;
+  const operations = {
+    write: async (): Promise<void> => undefined,
+    replace: async (): Promise<void> => {
+      replacements += 1;
+      const error = new Error("destination remains busy") as NodeJS.ErrnoException;
+      error.code = "EBUSY";
+      throw error;
+    },
+    remove: async (): Promise<void> => undefined,
+    delay: async (milliseconds: number): Promise<void> => {
+      delays.push(milliseconds);
+    },
+    temporaryId: (): string => "exhaustion-test",
+  };
+
+  await assert.rejects(
+    writeRuntimeStateJson("processes.json", { heartbeat: 1 }, operations),
+    /destination remains busy/u,
+  );
+  assert.equal(replacements, 7);
+  assert.deepEqual(delays, [10, 25, 50, 100, 200, 400]);
+});
+
+test("atomic manager state replacement does not retry non-transient failures", async () => {
+  let replacements = 0;
+  let delays = 0;
+  await assert.rejects(
+    writeRuntimeStateJson("processes.json", { heartbeat: 1 }, {
+      write: async () => undefined,
+      replace: async () => {
+        replacements += 1;
+        const error = new Error("invalid destination") as NodeJS.ErrnoException;
+        error.code = "EINVAL";
+        throw error;
+      },
+      remove: async () => undefined,
+      delay: async () => {
+        delays += 1;
+      },
+      temporaryId: () => "non-transient-test",
+    }),
+    /invalid destination/u,
+  );
+  assert.equal(replacements, 1);
+  assert.equal(delays, 0);
+});
+
+test("manager state retry aborts when process-record ownership changes", async () => {
+  let replacements = 0;
+  let ownerIsCurrent = true;
+  await assert.rejects(
+    writeRuntimeStateJson(
+      "processes.json",
+      { heartbeat: 1 },
+      {
+        write: async () => undefined,
+        replace: async () => {
+          replacements += 1;
+          const error = new Error("destination is temporarily open") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        },
+        remove: async () => undefined,
+        delay: async () => {
+          ownerIsCurrent = false;
+        },
+        temporaryId: () => "owner-change-test",
+      },
+      async () => {
+        if (!ownerIsCurrent) throw new Error("process-record owner changed");
+      },
+    ),
+    /process-record owner changed/u,
+  );
+  assert.equal(replacements, 1);
 });
 
 test("install refuses to touch a runtime with a live managed process record", async () => {

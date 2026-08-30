@@ -270,15 +270,96 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-async function writeRuntimeStateJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = `${path}.${String(process.pid)}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+export interface RuntimeStateFileOperations {
+  write: (path: string, contents: string) => Promise<void>;
+  replace: (temporaryPath: string, path: string) => Promise<void>;
+  remove: (path: string) => Promise<void>;
+  delay: (milliseconds: number) => Promise<void>;
+  temporaryId: () => string;
+}
+
+const DEFAULT_RUNTIME_STATE_FILE_OPERATIONS: RuntimeStateFileOperations = {
+  write: async (path, contents) => {
+    await writeFile(path, contents, "utf8");
+  },
+  replace: async (temporaryPath, path) => {
     await rename(temporaryPath, path);
+  },
+  remove: async path => {
+    await rm(path, { force: true });
+  },
+  delay: async milliseconds => {
+    await new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
+  },
+  temporaryId: randomUUID,
+};
+
+const RUNTIME_STATE_REPLACE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200, 400] as const;
+
+function runtimeStateReplaceIsRetryable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+export async function writeRuntimeStateJson(
+  path: string,
+  value: unknown,
+  operations: RuntimeStateFileOperations = DEFAULT_RUNTIME_STATE_FILE_OPERATIONS,
+  beforeReplaceAttempt?: () => Promise<void>,
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.${String(process.pid)}.${operations.temporaryId()}.tmp`;
+  let primaryError: unknown;
+  try {
+    await operations.write(temporaryPath, `${JSON.stringify(value, null, 2)}\n`);
+    for (let attempt = 0; ; attempt += 1) {
+      await beforeReplaceAttempt?.();
+      try {
+        await operations.replace(temporaryPath, path);
+        break;
+      } catch (error) {
+        const delay = RUNTIME_STATE_REPLACE_RETRY_DELAYS_MS[attempt];
+        if (delay === undefined || !runtimeStateReplaceIsRetryable(error)) throw error;
+        await operations.delay(delay);
+      }
+    }
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await rm(temporaryPath, { force: true });
+    try {
+      await operations.remove(temporaryPath);
+    } catch (cleanupError) {
+      if (primaryError === undefined) throw cleanupError;
+    }
   }
+}
+
+export interface RuntimeStateWriter {
+  write: (value: unknown) => Promise<void>;
+  flush: () => Promise<void>;
+}
+
+export function createRuntimeStateWriter(
+  path: string,
+  operations: RuntimeStateFileOperations = DEFAULT_RUNTIME_STATE_FILE_OPERATIONS,
+  beforeReplaceAttempt?: () => Promise<void>,
+): RuntimeStateWriter {
+  let writeWork = Promise.resolve();
+  return {
+    write: value => {
+      const nextWrite = writeWork.then(async () => {
+        await writeRuntimeStateJson(path, value, operations, beforeReplaceAttempt);
+      });
+      writeWork = nextWrite;
+      void nextWrite.catch(() => undefined);
+      return nextWrite;
+    },
+    flush: async () => {
+      await writeWork;
+    },
+  };
 }
 
 async function currentPatchSha(layout: RuntimeLayout): Promise<string> {
@@ -1141,15 +1222,18 @@ async function terminateRuntime(runtime: SpawnedRuntime): Promise<void> {
 
 interface RuntimeManagerHeartbeat {
   failure: Promise<never>;
+  assertOwned: () => Promise<void>;
   stop: () => Promise<void>;
 }
 
 function beginRuntimeManagerHeartbeat(
   layout: RuntimeLayout,
   owner: RuntimeProcessRecord,
+  writer: RuntimeStateWriter,
 ): RuntimeManagerHeartbeat {
   let stopped = false;
   let heartbeatWork = Promise.resolve();
+  let heartbeatError: Error | undefined;
   let rejectFailure!: (error: Error) => void;
   const failure = new Promise<never>((_resolve, reject) => {
     rejectFailure = reject;
@@ -1163,7 +1247,7 @@ function beginRuntimeManagerHeartbeat(
       throw new Error("The runtime manager lost ownership of its process record.");
     }
     if (stopped) return;
-    await writeRuntimeStateJson(layout.processFile, {
+    await writer.write({
       ...current,
       heartbeatAt: new Date().toISOString(),
     });
@@ -1172,13 +1256,23 @@ function beginRuntimeManagerHeartbeat(
   const timer = setInterval(() => {
     heartbeatWork = heartbeatWork.then(heartbeat).catch(error => {
       clearInterval(timer);
-      rejectFailure(error instanceof Error ? error : new Error(String(error)));
+      heartbeatError = error instanceof Error ? error : new Error(String(error));
+      rejectFailure(heartbeatError);
     });
   }, LIFECYCLE_HEARTBEAT_MS);
   timer.unref();
 
   return {
     failure,
+    assertOwned: async () => {
+      await heartbeatWork;
+      if (heartbeatError !== undefined) throw heartbeatError;
+      await writer.flush();
+      const current = await readProcessRecord(layout);
+      if (current === undefined || !sameProcessRecordOwner(current, owner)) {
+        throw new Error("The runtime manager lost ownership of its process record.");
+      }
+    },
     stop: async () => {
       stopped = true;
       clearInterval(timer);
@@ -1223,6 +1317,17 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
   let runtime: SpawnedRuntime | undefined;
   let ownedRecord: RuntimeProcessRecord | undefined;
   let managerHeartbeat: RuntimeManagerHeartbeat | undefined;
+  const processRecordWriter = createRuntimeStateWriter(
+    layout.processFile,
+    DEFAULT_RUNTIME_STATE_FILE_OPERATIONS,
+    async () => {
+      if (ownedRecord === undefined) return;
+      const current = await readProcessRecord(layout);
+      if (current === undefined || !sameProcessRecordOwner(current, ownedRecord)) {
+        throw new Error("The runtime manager lost ownership of its process record.");
+      }
+    },
+  );
   const launchedChildren: ManagedChildProcess[] = [];
   let reservationReleased = false;
   let evidenceDir = layout.evidenceDir;
@@ -1336,9 +1441,9 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
       heartbeatAt: now,
       commit: TRUEFORGE_COMMIT,
     };
-    await writeRuntimeStateJson(layout.processFile, record);
+    await processRecordWriter.write(record);
     ownedRecord = record;
-    managerHeartbeat = beginRuntimeManagerHeartbeat(layout, record);
+    managerHeartbeat = beginRuntimeManagerHeartbeat(layout, record, processRecordWriter);
     if (!(await reservation.release())) {
       throw new Error("The start lifecycle reservation was lost before runtime publication.");
     }
@@ -1424,6 +1529,7 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
       await stop();
       return;
     }
+    await heartbeat.assertOwned();
     process.stdout.write("\nExitRamp local stack is ready.\n");
     process.stdout.write(`TrueForge: ${TRUEFORGE_URL}\n`);
     process.stdout.write(`ExitRamp MCP: ${EXITRAMP_URL}/mcp\n`);
