@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter, once } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -17,19 +17,23 @@ import {
   acquireRuntimeStartReservation,
   assertManagedLayout,
   commandInvocation,
+  createRuntimeStateWriter,
   formatRuntimeStatus,
   installTrueForgeRuntime,
   launchManagedProcess,
+  publishProcessDescriptor,
   removeProcessRecordIfOwned,
   runtimeEvidenceDirectory,
   runtimeLayout,
   runtimeManagerLeaseIsActive,
+  runtimeProcessHeartbeatPath,
   runtimeStopWasRequested,
   stopTrueForgeRuntime,
   terminateManagedChildren,
   verifyRuntimeInstallation,
   waitForManagedChildExit,
   waitForManagedChildHealth,
+  writeRuntimeStateJson,
 } from "../../src/trueforge/runtime.js";
 
 test("portable runtime paths stay inside ExitRamp-owned ignored directories", () => {
@@ -39,7 +43,8 @@ test("portable runtime paths stay inside ExitRamp-owned ignored directories", ()
   assert.doesNotThrow(() => assertManagedLayout(layout));
   assert.equal(layout.runtimeDir, join(root, ".trueforge", "runtime"));
   assert.equal(layout.sqlitePath, join(root, ".trueforge", "data", "db.sqlite"));
-  assert.equal(layout.processFile, join(root, ".trueforge", "run", "processes.json"));
+  assert.equal(layout.processFile, join(root, ".trueforge", "run", "processes.v2.json"));
+  assert.equal(layout.legacyProcessFile, join(root, ".trueforge", "run", "processes.json"));
   assert.equal(layout.stopRequestFile, join(root, ".trueforge", "run", "stop-request.json"));
   assert.equal(layout.startLockFile, join(root, ".trueforge", "run", "start.lock"));
   assert.equal(layout.evidenceDir, join(root, ".exitramp", "evidence"));
@@ -83,6 +88,38 @@ test("start reservations are exclusive and release only their own lock", async (
   }
 });
 
+test("a stale lease is never reclaimed while its reservation PID is alive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "exitramp-runtime-live-stale-lock-"));
+  const layout = runtimeLayout(root);
+  try {
+    await mkdir(layout.runDir, { recursive: true });
+    await writeFile(layout.startLockFile, `${JSON.stringify({
+      manager: "exitramp-trueforge-runtime-v1",
+      managerPid: process.pid,
+      nonce: "paused-live-owner",
+      operation: "start",
+      startedAt: "2020-01-01T00:00:00.000Z",
+    })}\n`, "utf8");
+    await writeFile(join(layout.runDir, "lifecycle-paused-live-owner.lease.json"), `${JSON.stringify({
+      manager: "exitramp-trueforge-runtime-v1",
+      managerPid: process.pid,
+      nonce: "paused-live-owner",
+      heartbeatAt: "2020-01-01T00:00:00.000Z",
+    })}\n`, "utf8");
+
+    await assert.rejects(
+      acquireRuntimeLifecycleReservation(layout, "stop"),
+      /lifecycle operation is already in progress/u,
+    );
+    assert.equal(
+      JSON.parse(await readFile(layout.startLockFile, "utf8")).nonce,
+      "paused-live-owner",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("process cleanup cannot remove a newer manager's record", async () => {
   const root = await mkdtemp(join(tmpdir(), "exitramp-runtime-owner-"));
   const layout = runtimeLayout(root);
@@ -99,6 +136,12 @@ test("process cleanup cannot remove a newer manager's record", async () => {
   try {
     await mkdir(layout.runDir, { recursive: true });
     await writeFile(layout.processFile, `${JSON.stringify(record)}\n`, "utf8");
+    await writeFile(runtimeProcessHeartbeatPath(layout, record.instanceId), `${JSON.stringify({
+      manager: record.manager,
+      instanceId: record.instanceId,
+      managerPid: record.managerPid,
+      heartbeatAt: record.heartbeatAt,
+    })}\n`, "utf8");
 
     assert.equal(await removeProcessRecordIfOwned(layout, {
       managerPid: record.managerPid,
@@ -107,7 +150,282 @@ test("process cleanup cannot remove a newer manager's record", async () => {
     assert.deepEqual(JSON.parse(await readFile(layout.processFile, "utf8")), record);
 
     assert.equal(await removeProcessRecordIfOwned(layout, record), true);
-    await assert.rejects(access(layout.processFile));
+    assert.deepEqual(JSON.parse(await readFile(layout.processFile, "utf8")), record);
+    await assert.rejects(access(runtimeProcessHeartbeatPath(layout, record.instanceId)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manager state writes are serialized when callers overlap", async () => {
+  let activeReplacements = 0;
+  let maximumActiveReplacements = 0;
+  let replacementCount = 0;
+  let markFirstReplacementStarted!: () => void;
+  const firstReplacementStarted = new Promise<void>(resolvePromise => {
+    markFirstReplacementStarted = resolvePromise;
+  });
+  let releaseFirst!: () => void;
+  const firstReplacementCanFinish = new Promise<void>(resolvePromise => {
+    releaseFirst = resolvePromise;
+  });
+  const writer = createRuntimeStateWriter("processes.json", {
+    write: async () => undefined,
+    replace: async () => {
+      replacementCount += 1;
+      activeReplacements += 1;
+      maximumActiveReplacements = Math.max(maximumActiveReplacements, activeReplacements);
+      if (replacementCount === 1) {
+        markFirstReplacementStarted();
+        await firstReplacementCanFinish;
+      }
+      activeReplacements -= 1;
+    },
+    remove: async () => undefined,
+    delay: async () => undefined,
+    temporaryId: (() => {
+      let id = 0;
+      return () => `write-${String(++id)}`;
+    })(),
+  });
+
+  const first = writer.write({ heartbeat: 1 });
+  const second = writer.write({ heartbeat: 2 });
+  await firstReplacementStarted;
+  assert.equal(replacementCount, 1);
+  releaseFirst();
+  await Promise.all([first, second, writer.flush()]);
+
+  assert.equal(maximumActiveReplacements, 1);
+  assert.equal(replacementCount, 2);
+});
+
+test("atomic manager state replacement retries transient Windows EPERM", async () => {
+  const delays: number[] = [];
+  let replacements = 0;
+  await writeRuntimeStateJson("processes.json", { heartbeat: 1 }, {
+    write: async () => undefined,
+    replace: async () => {
+      replacements += 1;
+      if (replacements < 3) {
+        const error = new Error("destination is temporarily open") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      }
+    },
+    remove: async () => undefined,
+    delay: async milliseconds => {
+      delays.push(milliseconds);
+    },
+    temporaryId: () => "retry-test",
+  });
+
+  assert.equal(replacements, 3);
+  assert.deepEqual(delays, [10, 25]);
+});
+
+test("a committed state replacement stays successful when temp cleanup fails", async () => {
+  let replacements = 0;
+  await assert.doesNotReject(writeRuntimeStateJson("processes.json", { heartbeat: 1 }, {
+    write: async () => undefined,
+    replace: async () => {
+      replacements += 1;
+    },
+    remove: async () => {
+      throw new Error("temporary file was already consumed");
+    },
+    delay: async () => undefined,
+    temporaryId: () => "committed-cleanup-test",
+  }));
+  assert.equal(replacements, 1);
+});
+
+test("atomic manager state replacement stops after the bounded retry budget", async () => {
+  const delays: number[] = [];
+  let replacements = 0;
+  const operations = {
+    write: async (): Promise<void> => undefined,
+    replace: async (): Promise<void> => {
+      replacements += 1;
+      const error = new Error("destination remains busy") as NodeJS.ErrnoException;
+      error.code = "EBUSY";
+      throw error;
+    },
+    remove: async (): Promise<void> => undefined,
+    delay: async (milliseconds: number): Promise<void> => {
+      delays.push(milliseconds);
+    },
+    temporaryId: (): string => "exhaustion-test",
+  };
+
+  await assert.rejects(
+    writeRuntimeStateJson("processes.json", { heartbeat: 1 }, operations),
+    /destination remains busy/u,
+  );
+  assert.equal(replacements, 7);
+  assert.deepEqual(delays, [10, 25, 50, 100, 200, 400]);
+});
+
+test("atomic manager state replacement does not retry non-transient failures", async () => {
+  let replacements = 0;
+  let delays = 0;
+  await assert.rejects(
+    writeRuntimeStateJson("processes.json", { heartbeat: 1 }, {
+      write: async () => undefined,
+      replace: async () => {
+        replacements += 1;
+        const error = new Error("invalid destination") as NodeJS.ErrnoException;
+        error.code = "EINVAL";
+        throw error;
+      },
+      remove: async () => undefined,
+      delay: async () => {
+        delays += 1;
+      },
+      temporaryId: () => "non-transient-test",
+    }),
+    /invalid destination/u,
+  );
+  assert.equal(replacements, 1);
+  assert.equal(delays, 0);
+});
+
+test("manager state retry aborts when process-record ownership changes", async () => {
+  let replacements = 0;
+  let ownerIsCurrent = true;
+  await assert.rejects(
+    writeRuntimeStateJson(
+      "processes.json",
+      { heartbeat: 1 },
+      {
+        write: async () => undefined,
+        replace: async () => {
+          replacements += 1;
+          const error = new Error("destination is temporarily open") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        },
+        remove: async () => undefined,
+        delay: async () => {
+          ownerIsCurrent = false;
+        },
+        temporaryId: () => "owner-change-test",
+      },
+      async () => {
+        if (!ownerIsCurrent) throw new Error("process-record owner changed");
+      },
+    ),
+    /process-record owner changed/u,
+  );
+  assert.equal(replacements, 1);
+});
+
+test("an old manager heartbeat cannot overwrite a newer immutable descriptor", async () => {
+  const root = await mkdtemp(join(tmpdir(), "exitramp-runtime-descriptor-race-"));
+  const layout = runtimeLayout(root);
+  const now = new Date().toISOString();
+  const oldDescriptor = {
+    manager: "exitramp-trueforge-runtime-v1" as const,
+    instanceId: "old-manager",
+    managerPid: process.pid,
+    trueforgePid: process.pid,
+    exitrampPid: process.pid,
+    startedAt: now,
+    heartbeatAt: now,
+    commit: TRUEFORGE_COMMIT as typeof TRUEFORGE_COMMIT,
+  };
+  const newDescriptor = {
+    ...oldDescriptor,
+    instanceId: "new-manager",
+  };
+  let markOldReplaceStarted!: () => void;
+  const oldReplaceStarted = new Promise<void>(resolvePromise => {
+    markOldReplaceStarted = resolvePromise;
+  });
+  let releaseOldReplace!: () => void;
+  const oldReplaceCanFinish = new Promise<void>(resolvePromise => {
+    releaseOldReplace = resolvePromise;
+  });
+  const reservation = {
+    assertOwned: async (): Promise<void> => undefined,
+    release: async (): Promise<boolean> => true,
+  };
+
+  try {
+    await mkdir(layout.runDir, { recursive: true });
+    await writeFile(layout.processFile, `${JSON.stringify(oldDescriptor)}\n`, "utf8");
+    const oldHeartbeatPath = runtimeProcessHeartbeatPath(layout, oldDescriptor.instanceId);
+    const oldWriter = createRuntimeStateWriter(oldHeartbeatPath, {
+      write: async (path, contents) => {
+        await writeFile(path, contents, "utf8");
+      },
+      replace: async (temporaryPath, path) => {
+        markOldReplaceStarted();
+        await oldReplaceCanFinish;
+        await rename(temporaryPath, path);
+      },
+      remove: async path => {
+        await rm(path, { force: true });
+      },
+      delay: async () => undefined,
+      temporaryId: () => "old-heartbeat",
+    });
+    const oldWrite = oldWriter.write({
+      manager: oldDescriptor.manager,
+      instanceId: oldDescriptor.instanceId,
+      managerPid: oldDescriptor.managerPid,
+      heartbeatAt: new Date().toISOString(),
+    });
+    await oldReplaceStarted;
+
+    await rm(layout.processFile, { force: true });
+    await writeRuntimeStateJson(
+      runtimeProcessHeartbeatPath(layout, newDescriptor.instanceId),
+      {
+        manager: newDescriptor.manager,
+        instanceId: newDescriptor.instanceId,
+        managerPid: newDescriptor.managerPid,
+        heartbeatAt: now,
+      },
+    );
+    await publishProcessDescriptor(layout, newDescriptor, reservation);
+    releaseOldReplace();
+    await oldWrite;
+
+    assert.deepEqual(JSON.parse(await readFile(layout.processFile, "utf8")), newDescriptor);
+  } finally {
+    releaseOldReplace?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("descriptor publication loser cannot delete or replace the winner", async () => {
+  const root = await mkdtemp(join(tmpdir(), "exitramp-runtime-descriptor-publish-"));
+  const layout = runtimeLayout(root);
+  const now = new Date().toISOString();
+  const winner = {
+    manager: "exitramp-trueforge-runtime-v1" as const,
+    instanceId: "publication-winner",
+    managerPid: process.pid,
+    trueforgePid: process.pid,
+    exitrampPid: process.pid,
+    startedAt: now,
+    heartbeatAt: now,
+    commit: TRUEFORGE_COMMIT as typeof TRUEFORGE_COMMIT,
+  };
+  const reservation = {
+    assertOwned: async (): Promise<void> => undefined,
+    release: async (): Promise<boolean> => true,
+  };
+  try {
+    await mkdir(layout.runDir, { recursive: true });
+    await publishProcessDescriptor(layout, winner, reservation);
+    const winnerBytes = await readFile(layout.processFile, "utf8");
+    await assert.rejects(
+      publishProcessDescriptor(layout, { ...winner, instanceId: "publication-loser" }, reservation),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EEXIST",
+    );
+    assert.equal(await readFile(layout.processFile, "utf8"), winnerBytes);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -118,16 +436,28 @@ test("install refuses to touch a runtime with a live managed process record", as
   const layout = runtimeLayout(root);
   try {
     await mkdir(layout.runDir, { recursive: true });
-    await writeFile(layout.processFile, `${JSON.stringify({
+    const now = new Date().toISOString();
+    const descriptor = {
       manager: "exitramp-trueforge-runtime-v1",
       instanceId: "live-install-manager",
       managerPid: process.pid,
       trueforgePid: process.pid,
       exitrampPid: process.pid,
-      startedAt: new Date().toISOString(),
-      heartbeatAt: new Date().toISOString(),
+      startedAt: now,
+      heartbeatAt: now,
       commit: TRUEFORGE_COMMIT,
-    })}\n`, "utf8");
+    };
+    await writeFile(layout.processFile, `${JSON.stringify(descriptor)}\n`, "utf8");
+    await writeFile(
+      runtimeProcessHeartbeatPath(layout, descriptor.instanceId),
+      `${JSON.stringify({
+        manager: descriptor.manager,
+        instanceId: descriptor.instanceId,
+        managerPid: descriptor.managerPid,
+        heartbeatAt: now,
+      })}\n`,
+      "utf8",
+    );
 
     await assert.rejects(
       installTrueForgeRuntime(layout),
@@ -233,7 +563,7 @@ test("a live numeric PID without a fresh instance lease is never trusted", () =>
   }, now), true);
 });
 
-test("stop discards a legacy PID-only record without signaling its PIDs", async () => {
+test("stop discards an unverifiable v2 record without signaling its PIDs", async () => {
   const root = await mkdtemp(join(tmpdir(), "exitramp-runtime-legacy-stop-"));
   const layout = runtimeLayout(root);
   try {
@@ -250,6 +580,30 @@ test("stop discards a legacy PID-only record without signaling its PIDs", async 
     await assert.doesNotReject(stopTrueForgeRuntime(layout));
     await assert.rejects(access(layout.processFile));
     assert.equal(runtimeManagerLeaseIsActive(undefined), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a live legacy manager record is never trusted or deleted", async () => {
+  const root = await mkdtemp(join(tmpdir(), "exitramp-runtime-live-legacy-stop-"));
+  const layout = runtimeLayout(root);
+  try {
+    await mkdir(layout.runDir, { recursive: true });
+    await writeFile(layout.legacyProcessFile, `${JSON.stringify({
+      manager: "exitramp-trueforge-runtime-v1",
+      managerPid: process.pid,
+      trueforgePid: process.pid,
+      exitrampPid: process.pid,
+      startedAt: "2026-08-30T00:00:00.000Z",
+      commit: TRUEFORGE_COMMIT,
+    })}\n`, "utf8");
+
+    await assert.rejects(
+      stopTrueForgeRuntime(layout),
+      /legacy ExitRamp runtime manager may still be running/u,
+    );
+    await assert.doesNotReject(access(layout.legacyProcessFile));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
