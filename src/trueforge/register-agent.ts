@@ -27,7 +27,12 @@ export const VERDICT_ONLY_RESPONSE_POLICY = [
   "Result presentation:",
   "- After an allowed run completes, return only the human-readable verdict from ExitRamp.",
   "- Do not add first-person narration or recap approval, checks, execution, or tool chronology.",
-  "- In the plain-language verdict beneath the card, use these scan markers once: ✅ baseline; ❌ failed candidate or ✅ accepted candidate; 🛠️ critical-tool behavior; 🔗 typed grounding; 🚫 prohibited tool calls; 💵 estimated cost; ⚠️ rejection reasons; 🛑 final migration decision.",
+  "- Prefix the migration-verdict heading itself with 🛑.",
+  "- Prefix the baseline result line with ✅.",
+  "- Prefix the candidate result line with ❌ when rejected and ✅ when eligible.",
+  "- Prefix critical-tool behavior with 🛠️, typed grounding with 🔗, prohibited tool calls with 🚫, and estimated cost with 💵.",
+  "- Prefix the rejection-reasons heading with ⚠️.",
+  "- Never print an emoji key, legend, or semicolon-separated marker list.",
   "- Keep the result card itself emoji-free.",
 ].join("\n");
 export const EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS = [

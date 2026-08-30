@@ -1409,6 +1409,10 @@ export function evaluationDisplayTone(report: EvaluationPrimaryResponse): "posit
   return report.human_report.verdict.status === "eligible" ? "positive" : "negative";
 }
 
+export const NATIVE_APPROVAL_OPERATOR_INSTRUCTION =
+  "Continue this turn by calling run_migration_evaluation with the exact approval_request returned above. "
+  + "Do not ask for approval in prose or end the turn: TrueForge will pause that tool call and display its native Allow or Deny card before either model is contacted.";
+
 export function renderEvaluationErrorMarkdown(evaluationEvidenceId: string): string {
   return [
     "## Paid OrderDesk comparison failed",
@@ -1555,8 +1559,15 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       const prepared = await prepareMigrationEvaluationApproval(evidenceStore, input);
       const displayMarkdown = renderApprovalMarkdown(prepared.result.approval_request);
       return {
-        content: [{ type: "text", text: displayMarkdown }],
-        structuredContent: { ...prepared.result, display_markdown: cardMarkdown(displayMarkdown) },
+        content: [
+          { type: "text", text: displayMarkdown },
+          { type: "text", text: NATIVE_APPROVAL_OPERATOR_INSTRUCTION },
+        ],
+        structuredContent: {
+          ...prepared.result,
+          display_markdown: cardMarkdown(displayMarkdown),
+          operator_next_step: NATIVE_APPROVAL_OPERATOR_INSTRUCTION,
+        },
       };
     },
   );

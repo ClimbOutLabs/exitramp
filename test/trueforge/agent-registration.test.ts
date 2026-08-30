@@ -91,9 +91,11 @@ test("checked-in agent binds the exact ExitRamp workflow and native paid-tool ga
     manifest.instructions,
     /Do not add first-person narration or recap approval, checks, execution, or tool chronology/,
   );
-  assert.match(manifest.instructions, /✅ baseline/);
-  assert.match(manifest.instructions, /❌ failed candidate or ✅ accepted candidate/);
-  assert.match(manifest.instructions, /🛑 final migration decision/);
+  assert.match(manifest.instructions, /migration-verdict heading itself with 🛑/);
+  assert.match(manifest.instructions, /baseline result line with ✅/);
+  assert.match(manifest.instructions, /candidate result line with ❌ when rejected and ✅ when eligible/);
+  assert.match(manifest.instructions, /critical-tool behavior with 🛠️/);
+  assert.match(manifest.instructions, /Never print an emoji key, legend, or semicolon-separated marker list/);
   assert.match(manifest.instructions, /Keep the result card itself emoji-free/);
   assert.deepEqual(manifest.config?.["sandbox"], {
     enabled: true,
