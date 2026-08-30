@@ -218,18 +218,6 @@ Register the MCP URL in TrueForge, then install the checked-in ExitRamp agent:
 pnpm trueforge:setup
 ~~~
 
-Configure both provider keys for the existing ExitRamp connector. The prompts
-are hidden; TrueForge stores the keys as connector headers and sends them only
-to the local ExitRamp MCP:
-
-~~~powershell
-pnpm trueforge:credentials
-~~~
-
-Set <code>TRUEFORGE_URL</code> when TrueForge is not at
-<code>http://127.0.0.1:8790</code>. The command does not write keys to the
-repository or evaluation evidence.
-
 The setup command checks that TrueForge can see all six ExitRamp tools, binds
 only those tools to the named <code>exitramp-orderdesk</code> agent, and places
 the paid comparison behind TrueForge's native Allow or Deny control. Start a

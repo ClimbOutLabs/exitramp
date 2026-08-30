@@ -15,7 +15,6 @@
     "demo:local": "tsx src/demo/local.ts",
     "mcp": "tsx src/mcp/server.ts",
     "test": "tsx --test test/**/*.test.ts",
-    "trueforge:credentials": "tsx src/trueforge/configure-credentials.ts",
     "trueforge:setup": "tsx src/trueforge/register-agent.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
