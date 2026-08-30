@@ -32,6 +32,15 @@ const AgentManifestSchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 
+const ManagedExecutionConfigSchema = z.object({
+  sandbox: z.object({
+    enabled: z.literal(true),
+  }).passthrough(),
+  ask_user_questions: z.object({
+    enabled: z.literal(false),
+  }).passthrough(),
+}).passthrough();
+
 const ToolsResponseSchema = z.object({
   data: z.array(z.object({ name: z.string() }).passthrough()),
 });
@@ -112,6 +121,11 @@ export async function loadAgentManifest(
     ? parsed
     : { ...parsed, model: { ...parsed.model, name: modelName } };
   assertExactToolPolicy(manifest);
+  if (!ManagedExecutionConfigSchema.safeParse(manifest.config).success) {
+    throw new Error(
+      "ExitRamp agent must enable the sandbox and disable alternate user-question pauses.",
+    );
+  }
   if (!manifest.instructions.startsWith(MANAGED_AGENT_MARKER)) {
     throw new Error("ExitRamp agent manifest is missing its managed-agent marker.");
   }
