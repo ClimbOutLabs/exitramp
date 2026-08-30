@@ -27,6 +27,8 @@ export const VERDICT_ONLY_RESPONSE_POLICY = [
   "Result presentation:",
   "- After an allowed run completes, return only the human-readable verdict from ExitRamp.",
   "- Do not add first-person narration or recap approval, checks, execution, or tool chronology.",
+  "- In the plain-language verdict beneath the card, use these scan markers once: ✅ baseline; ❌ failed candidate or ✅ accepted candidate; 🛠️ critical-tool behavior; 🔗 typed grounding; 🚫 prohibited tool calls; 💵 estimated cost; ⚠️ rejection reasons; 🛑 final migration decision.",
+  "- Keep the result card itself emoji-free.",
 ].join("\n");
 export const EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS = [
   { provider_name: "openai", header_name: "x-exitramp-openai-key" },
@@ -154,7 +156,7 @@ export async function loadAgentManifest(
   modelName?: string,
 ): Promise<AgentManifest> {
   const parsed = AgentManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
-  const managedInstructions = parsed.instructions.includes(VERDICT_ONLY_RESPONSE_POLICY)
+  const managedInstructions = parsed.instructions.endsWith(VERDICT_ONLY_RESPONSE_POLICY)
     ? parsed.instructions
     : `${parsed.instructions}\n\n${VERDICT_ONLY_RESPONSE_POLICY}`;
   const manifest: AgentManifest = {

@@ -27,10 +27,10 @@ index 41db8fb..e3e8fc9 100644
 +  );
 diff --git a/packages/frontend/src/HumanReadableToolCallContent.tsx b/packages/frontend/src/HumanReadableToolCallContent.tsx
 new file mode 100644
-index 0000000..c534586
+index 0000000..0ac27b0
 --- /dev/null
 +++ b/packages/frontend/src/HumanReadableToolCallContent.tsx
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,111 @@
 +import { Markdown, ToolCallContentBlock, type ToolCallContentBlockProps } from '@truefoundry/trueforge-ui';
 +import { useState } from 'react';
 +import { getToolPresentation } from './toolPresentation';
@@ -73,6 +73,7 @@ index 0000000..c534586
 +    content: props.content,
 +    isJson: props.isJson !== false,
 +    ...(props.displayMarkdown ? { displayMarkdown: props.displayMarkdown } : {}),
++    ...(props.displayTone ? { displayTone: props.displayTone } : {}),
 +  });
 +
 +  if (!presentation) return <ToolCallContentBlock {...props} />;
@@ -82,16 +83,21 @@ index 0000000..c534586
 +  const exactPayload = props.copyValue ?? props.content;
 +
 +  if (presentation.kind === 'display-markdown') {
++    const isTestResult = presentation.tone !== 'neutral';
++    const ariaLabel = isTestResult ? 'Pre-migration test result' : 'Pre-migration review';
++    const statusLabel = isTestResult ? 'Pre-migration Test Result' : 'Pre-migration Review';
++
 +    return (
 +      <section
-+        aria-label="Human-readable tool result"
-+        className={`${className} human-tool-card--result`}
++        aria-label={ariaLabel}
++        className={`${className} human-tool-card--result human-tool-card--result-${presentation.tone}`}
 +        data-content={props.content}
++        data-display-tone={presentation.tone}
 +        data-testid={dataTestId}
 +      >
 +        <header className="human-tool-card__masthead">
 +          <span>{props.title}</span>
-+          <span className="human-tool-card__status">Readable result</span>
++          <span className="human-tool-card__status">{statusLabel}</span>
 +        </header>
 +        <div className="human-tool-card__markdown">
 +          <Markdown content={presentation.markdown} readOnly />
@@ -137,10 +143,10 @@ index 0000000..c534586
 +  );
 +}
 diff --git a/packages/frontend/src/index.css b/packages/frontend/src/index.css
-index d3a80c1..5e68b33 100644
+index d3a80c1..c54452f 100644
 --- a/packages/frontend/src/index.css
 +++ b/packages/frontend/src/index.css
-@@ -59,0 +60,183 @@ body {
+@@ -59,0 +60,242 @@ body {
 +
 +/* Tool reviews use an audit-sheet treatment: exact facts first, decoration second. */
 +.human-tool-card {
@@ -161,9 +167,30 @@ index d3a80c1..5e68b33 100644
 +}
 +
 +.human-tool-card--result {
++  --result-accent: color-mix(in srgb, var(--text-secondary, #62626a) 72%, var(--text-primary, #09090b));
++  --result-border: var(--border, #e4e4e7);
++  --result-surface: var(--card-bg, #fff);
++  --result-row-surface: var(--card-bg, #fff);
++
++  border-color: var(--result-border);
++  background: var(--result-surface);
 +  box-shadow:
-+    inset 3px 0 0 var(--success-bg, #16a34a),
++    inset 3px 0 0 var(--result-accent),
 +    0 8px 24px color-mix(in srgb, var(--shadow-color, #09090b) 8%, transparent);
++}
++
++.human-tool-card--result-positive {
++  --result-accent: color-mix(in srgb, var(--success-bg, #16a34a) 72%, var(--text-primary, #09090b));
++  --result-border: color-mix(in srgb, var(--success-bg, #16a34a) 34%, var(--border, #e4e4e7));
++  --result-surface: color-mix(in srgb, var(--success-bg, #16a34a) 7%, var(--card-bg, #fff));
++  --result-row-surface: color-mix(in srgb, var(--success-bg, #16a34a) 4%, var(--card-bg, #fff));
++}
++
++.human-tool-card--result-negative {
++  --result-accent: color-mix(in srgb, var(--failure-bg, #dc2626) 72%, var(--text-primary, #09090b));
++  --result-border: color-mix(in srgb, var(--failure-bg, #dc2626) 34%, var(--border, #e4e4e7));
++  --result-surface: color-mix(in srgb, var(--failure-bg, #dc2626) 7%, var(--card-bg, #fff));
++  --result-row-surface: color-mix(in srgb, var(--failure-bg, #dc2626) 4%, var(--card-bg, #fff));
 +}
 +
 +.human-tool-card__masthead {
@@ -195,7 +222,13 @@ index d3a80c1..5e68b33 100644
 +}
 +
 +.human-tool-card--result .human-tool-card__status {
-+  color: var(--success-bg, #16a34a);
++  color: var(--result-accent);
++}
++
++.human-tool-card--result .human-tool-card__masthead {
++  flex-wrap: wrap;
++  border-color: var(--result-border);
++  background: color-mix(in srgb, var(--result-surface) 72%, var(--secondary-bg, #f4f4f5));
 +}
 +
 +.human-tool-card__decision {
@@ -251,12 +284,40 @@ index d3a80c1..5e68b33 100644
 +}
 +
 +.human-tool-card__markdown {
-+  padding: 0.85rem 1rem 0.45rem;
++  background: var(--result-border);
 +}
 +
 +.human-tool-card__markdown .aui-markdown {
++  display: flex;
++  flex-direction: column;
++  gap: 1px;
++  background: var(--result-border);
 +  color: var(--text-primary, #09090b);
 +  font-size: 0.78rem;
++}
++
++.human-tool-card__markdown .aui-markdown > * {
++  width: 100%;
++  margin: 0;
++  padding: 0.76rem 0.95rem 0.8rem;
++  background: var(--result-row-surface);
++}
++
++.human-tool-card__markdown .aui-markdown > :is(ul, ol) {
++  padding-left: 2.15rem;
++}
++
++.human-tool-card__markdown .aui-markdown > :is(h1, h2, h3, h4, h5, h6) {
++  border: 0;
++  font-size: 0.98rem;
++  font-weight: 650;
++  letter-spacing: -0.012em;
++  line-height: 1.4;
++}
++
++.human-tool-card--result .human-tool-card__details {
++  border-top: 1px solid var(--result-border);
++  background: var(--result-surface);
 +}
 +
 +.human-tool-card__details {
@@ -308,7 +369,11 @@ index d3a80c1..5e68b33 100644
 +  border-radius: calc(var(--radius, 0.5rem) - 2px);
 +  background: var(--primary-bg, #fff);
 +  color: var(--text-secondary, #62626a);
-+  font: 500 0.69rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
++  font:
++    500 0.69rem/1.45 ui-monospace,
++    SFMono-Regular,
++    Consolas,
++    monospace;
 +  white-space: pre-wrap;
 +  word-break: break-word;
 +}
@@ -326,11 +391,15 @@ index d3a80c1..5e68b33 100644
 +}
 diff --git a/packages/frontend/src/toolPresentation.ts b/packages/frontend/src/toolPresentation.ts
 new file mode 100644
-index 0000000..49b6bfc
+index 0000000..87bf96f
 --- /dev/null
 +++ b/packages/frontend/src/toolPresentation.ts
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,131 @@
++import type { ToolCallDisplayTone } from '@truefoundry/trueforge-ui';
++
 +type JsonScalar = string | number | boolean | null;
++
++export type ResultDisplayTone = ToolCallDisplayTone | 'neutral';
 +
 +export type ReviewField = {
 +  label: string;
@@ -349,6 +418,7 @@ index 0000000..49b6bfc
 +  | {
 +      kind: 'display-markdown';
 +      markdown: string;
++      tone: ResultDisplayTone;
 +    };
 +
 +function isRecord(value: unknown): value is Record<string, unknown> {
@@ -438,26 +508,35 @@ index 0000000..49b6bfc
 +  content,
 +  isJson,
 +  displayMarkdown,
++  displayTone,
 +}: {
 +  title: string;
 +  content: string;
 +  isJson: boolean;
 +  displayMarkdown?: string;
++  displayTone?: unknown;
 +}): ToolPresentation | undefined {
 +  if (displayMarkdown?.trim()) {
-+    return { kind: 'display-markdown', markdown: displayMarkdown };
++    return {
++      kind: 'display-markdown',
++      markdown: displayMarkdown,
++      tone: displayTone === 'positive' || displayTone === 'negative' ? displayTone : 'neutral',
++    };
 +  }
 +  if (title !== 'Request' || !isJson) return undefined;
 +  return parseApprovalReview(content);
 +}
 diff --git a/packages/frontend/tests/toolPresentation.test.ts b/packages/frontend/tests/toolPresentation.test.ts
 new file mode 100644
-index 0000000..36d284b
+index 0000000..abe8a86
 --- /dev/null
 +++ b/packages/frontend/tests/toolPresentation.test.ts
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,168 @@
 +import assert from 'node:assert/strict';
 +import { describe, it } from 'node:test';
++import { createElement } from 'react';
++import { renderToStaticMarkup } from 'react-dom/server';
++import { HumanReadableToolCallContent } from '../src/HumanReadableToolCallContent';
 +import { getToolPresentation } from '../src/toolPresentation';
 +
 +describe('getToolPresentation', () => {
@@ -519,7 +598,7 @@ index 0000000..36d284b
 +        content: '{"status":"complete","display_markdown":"## Passed"}',
 +        displayMarkdown: '## Passed',
 +      }),
-+      { kind: 'display-markdown', markdown: '## Passed' },
++      { kind: 'display-markdown', markdown: '## Passed', tone: 'neutral' },
 +    );
 +    assert.equal(
 +      getToolPresentation({
@@ -532,16 +611,105 @@ index 0000000..36d284b
 +    );
 +  });
 +
++  it('uses only an explicit display tone for accepted and rejected result surfaces', () => {
++    assert.deepEqual(
++      getToolPresentation({
++        title: 'Response',
++        isJson: true,
++        content: '{"status":"completed"}',
++        displayMarkdown: '## Migration evaluation: Eligible for migration',
++        displayTone: 'positive',
++      }),
++      {
++        kind: 'display-markdown',
++        markdown: '## Migration evaluation: Eligible for migration',
++        tone: 'positive',
++      },
++    );
++    assert.deepEqual(
++      getToolPresentation({
++        title: 'Response',
++        isJson: true,
++        content: '{"status":"completed"}',
++        displayMarkdown: '## Migration evaluation: Rejected for migration',
++        displayTone: 'negative',
++      }),
++      {
++        kind: 'display-markdown',
++        markdown: '## Migration evaluation: Rejected for migration',
++        tone: 'negative',
++      },
++    );
++  });
++
++  it('keeps title-derived and invalid display tones neutral', () => {
++    assert.deepEqual(
++      getToolPresentation({
++        title: 'Response',
++        isJson: true,
++        content: '{"status":"completed"}',
++        displayMarkdown: '## Migration evaluation: Rejected for migration',
++      }),
++      {
++        kind: 'display-markdown',
++        markdown: '## Migration evaluation: Rejected for migration',
++        tone: 'neutral',
++      },
++    );
++    assert.deepEqual(
++      getToolPresentation({
++        title: 'Response',
++        isJson: true,
++        content: '{"status":"completed"}',
++        displayMarkdown: '## Migration evaluation',
++        displayTone: 'warning',
++      }),
++      {
++        kind: 'display-markdown',
++        markdown: '## Migration evaluation',
++        tone: 'neutral',
++      },
++    );
++  });
++
++  it('labels neutral markdown as a review and toned markdown as a test result', () => {
++    const neutralMarkup = renderToStaticMarkup(
++      createElement(HumanReadableToolCallContent, {
++        title: 'Prepare migration evaluation approval',
++        content: '{"status":"review"}',
++        displayMarkdown: '## Review the proposed evaluation',
++      }),
++    );
++    const resultMarkup = renderToStaticMarkup(
++      createElement(HumanReadableToolCallContent, {
++        title: 'Run migration evaluation',
++        content: '{"status":"completed"}',
++        displayMarkdown: '## Migration evaluation complete',
++        displayTone: 'positive',
++      }),
++    );
++
++    assert.match(neutralMarkup, /aria-label="Pre-migration review"/);
++    assert.match(neutralMarkup, />Pre-migration Review</);
++    assert.doesNotMatch(neutralMarkup, /Pre-migration Test Result|Readable result/);
++    assert.match(resultMarkup, /aria-label="Pre-migration test result"/);
++    assert.match(resultMarkup, />Pre-migration Test Result</);
++  });
++
 +  it('fails closed to the stock renderer for invalid JSON', () => {
 +    assert.equal(getToolPresentation({ title: 'Request', isJson: true, content: '{"approval_request":' }), undefined);
 +  });
 +});
 diff --git a/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx b/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx
-index 8a9fc8e..7c23d29 100644
+index 8a9fc8e..3d01ebe 100644
 --- a/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx
 +++ b/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx
-@@ -14,0 +15 @@ export type ToolCallContentBlockProps = {
+@@ -10,0 +11,2 @@ import { IconButton } from './primitives/IconButton.js';
++export type ToolCallDisplayTone = 'positive' | 'negative';
++
+@@ -14,0 +17,2 @@ export type ToolCallContentBlockProps = {
 +  displayMarkdown?: string;
++  displayTone?: ToolCallDisplayTone;
 diff --git a/packages/trueforge-ui/src/containers/AssistantMessageContainer.tsx b/packages/trueforge-ui/src/containers/AssistantMessageContainer.tsx
 index 7b37e64..1e9625c 100644
 --- a/packages/trueforge-ui/src/containers/AssistantMessageContainer.tsx
@@ -563,7 +731,7 @@ index 7b37e64..1e9625c 100644
 -                  <AgentStepsContainer toolCount={toolCount} thinkingCount={thinkingCount} hasFinal={hasFinal}>
 +                  <AgentStepsContainer toolCount={groupedToolCount} thinkingCount={thinkingCount} hasFinal={hasFinal}>
 diff --git a/packages/trueforge-ui/src/containers/ToolCallContainer.tsx b/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
-index 2fbf21d..e706d0c 100644
+index 2fbf21d..f104688 100644
 --- a/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
 +++ b/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
 @@ -12 +12 @@ import { useTrueFoundryRespondToToolApproval } from '@truefoundry/assistant-ui-r
@@ -574,16 +742,17 @@ index 2fbf21d..e706d0c 100644
 @@ -116 +117 @@ function RequestResponseSlots({
 -  response: { data: string; isJson: boolean };
 +  response: ToolResultContent;
-@@ -130 +131,7 @@ function RequestResponseSlots({
+@@ -130 +131,8 @@ function RequestResponseSlots({
 -      <ToolCallContentBlockContainer title="Response" content={response.data} isJson={response.isJson} resizable />
 +      <ToolCallContentBlockContainer
 +        title="Response"
 +        content={response.data}
 +        isJson={response.isJson}
 +        displayMarkdown={response.displayMarkdown}
++        displayTone={response.displayTone}
 +        resizable
 +      />
-@@ -143,6 +150,17 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
+@@ -143,6 +151,17 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
 -  const [expanded, setExpanded] = useState(isRequiresAction);
 -  const [prevRequiresAction, setPrevRequiresAction] = useState(isRequiresAction);
 -  if (isRequiresAction !== prevRequiresAction) {
@@ -607,55 +776,87 @@ index 2fbf21d..e706d0c 100644
 +      setExpanded(true);
 +    }
 +  }, [hasCompletedDisplayMarkdown, isRequiresAction]);
-@@ -241 +258,0 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
+@@ -241 +259,0 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
 -    const resultDisplay = getToolResultContent(part.result);
-@@ -286 +302,0 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
+@@ -286 +303,0 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
 -  const resultDisplay = getToolResultContent(part.result);
+diff --git a/packages/trueforge-ui/src/index.ts b/packages/trueforge-ui/src/index.ts
+index 42f16c6..8930c64 100644
+--- a/packages/trueforge-ui/src/index.ts
++++ b/packages/trueforge-ui/src/index.ts
+@@ -146 +146 @@ export { ToolCallContentBlock } from './atoms/ToolCallContentBlock.js';
+-export type { ToolCallContentBlockProps } from './atoms/ToolCallContentBlock.js';
++export type { ToolCallContentBlockProps, ToolCallDisplayTone } from './atoms/ToolCallContentBlock.js';
 diff --git a/packages/trueforge-ui/src/utils/toolCallParsing.ts b/packages/trueforge-ui/src/utils/toolCallParsing.ts
-index 8cbf0f5..846ea04 100644
+index 8cbf0f5..2800539 100644
 --- a/packages/trueforge-ui/src/utils/toolCallParsing.ts
 +++ b/packages/trueforge-ui/src/utils/toolCallParsing.ts
-@@ -210 +210 @@ export function getJsonDisplayValue(content: string | undefined): {
+@@ -4,0 +5 @@ import type { ToolCallStatus } from '../atoms/ToolCallCard.js';
++import type { ToolCallDisplayTone } from '../atoms/ToolCallContentBlock.js';
+@@ -210 +211 @@ export function getJsonDisplayValue(content: string | undefined): {
 -export function getToolResultContent(content: unknown): {
 +export type ToolResultContent = {
-@@ -213 +213,4 @@ export function getToolResultContent(content: unknown): {
+@@ -213 +214,13 @@ export function getToolResultContent(content: unknown): {
 -} {
 +  displayMarkdown?: string;
++  displayTone?: ToolCallDisplayTone;
 +};
 +
++function getEvaluationDisplayTone(result: Record<string, unknown>): ToolCallDisplayTone | undefined {
++  const humanReport = isUnknownRecord(result.human_report) ? result.human_report : undefined;
++  const verdict = humanReport && isUnknownRecord(humanReport.verdict) ? humanReport.verdict : undefined;
++  if (verdict?.status === 'eligible') return 'positive';
++  if (verdict?.status === 'rejected') return 'negative';
++  return undefined;
++}
++
 +export function getToolResultContent(content: unknown): ToolResultContent {
-@@ -217,0 +221,6 @@ export function getToolResultContent(content: unknown): {
+@@ -217,0 +231,13 @@ export function getToolResultContent(content: unknown): {
 +    const displayMarkdown =
 +      isUnknownRecord(parsedResult) &&
 +      typeof parsedResult.display_markdown === 'string' &&
 +      parsedResult.display_markdown.trim().length > 0
 +        ? parsedResult.display_markdown
 +        : undefined;
-@@ -226 +235,5 @@ export function getToolResultContent(content: unknown): {
++    const displayTone =
++      isUnknownRecord(parsedResult) &&
++      (parsedResult.display_tone === 'positive' || parsedResult.display_tone === 'negative')
++        ? parsedResult.display_tone
++        : isUnknownRecord(parsedResult)
++          ? getEvaluationDisplayTone(parsedResult)
++          : undefined;
+@@ -226 +252,6 @@ export function getToolResultContent(content: unknown): {
 -      return { data: display.value, isJson: display.isJson };
 +      return {
 +        data: display.value,
 +        isJson: display.isJson,
 +        ...(displayMarkdown === undefined ? {} : { displayMarkdown }),
++        ...(displayTone === undefined ? {} : { displayTone }),
 +      };
-@@ -229 +242,5 @@ export function getToolResultContent(content: unknown): {
+@@ -229 +260,6 @@ export function getToolResultContent(content: unknown): {
 -    return { data: display.value, isJson: display.isJson };
 +    return {
 +      data: display.value,
 +      isJson: display.isJson,
 +      ...(displayMarkdown === undefined ? {} : { displayMarkdown }),
++      ...(displayTone === undefined ? {} : { displayTone }),
 +    };
-@@ -234,0 +252,8 @@ export function getToolResultContent(content: unknown): {
+@@ -234,0 +271,13 @@ export function getToolResultContent(content: unknown): {
 +/**
 + * Keep user-facing approval and report cards in the message flow instead of
-+ * hiding them in the collapsible Agent steps section.
++ * hiding them in the collapsible Agent steps section. Approval metadata
++ * survives the transition from requires-action to a decided terminal state.
 + */
-+export function isMainChatToolCall(part: Pick<ToolCallMessagePartProps, 'status' | 'result'>): boolean {
-+  return part.status?.type === 'requires-action' || getToolResultContent(part.result).displayMarkdown !== undefined;
++export function isMainChatToolCall(part: Pick<ToolCallMessagePartProps, 'status' | 'result' | 'approval'>): boolean {
++  return (
++    part.approval != null ||
++    part.status?.type === 'requires-action' ||
++    getToolResultContent(part.result).displayMarkdown !== undefined
++  );
 +}
 +
 diff --git a/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx b/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
-index 090fc91..e804c53 100644
+index 090fc91..879a915 100644
 --- a/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
 +++ b/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
 @@ -3 +3 @@ import { ThreadPrimitive, type ThreadMessage, type ThreadMessageLike } from '@as
@@ -683,16 +884,20 @@ index 090fc91..e804c53 100644
 +  return render(<ToolCallMessageFixture content={content} overrides={overrides} />);
 +}
 +
-@@ -59,0 +71,8 @@ function createSubAgentCardProbe() {
+@@ -59,0 +71,12 @@ function createSubAgentCardProbe() {
 +function createToolCallContentBlockProbe() {
-+  return vi.fn(({ title, content, displayMarkdown }: ToolCallContentBlockProps) => (
-+    <div data-testid={`${title.toLowerCase()}-content-block-probe`} data-display-markdown={displayMarkdown}>
++  return vi.fn(({ title, content, displayMarkdown, displayTone }: ToolCallContentBlockProps) => (
++    <div
++      data-testid={`${title.toLowerCase()}-content-block-probe`}
++      data-display-markdown={displayMarkdown}
++      data-display-tone={displayTone}
++    >
 +      {content}
 +    </div>
 +  ));
 +}
 +
-@@ -100,0 +120,65 @@ describe('ToolCallContainer', () => {
+@@ -100,0 +124,67 @@ describe('ToolCallContainer', () => {
 +  it('forwards display markdown and auto-expands a completed result loaded from history', () => {
 +    const ToolCallContentBlock = createToolCallContentBlockProbe();
 +    const content: ThreadMessageLike['content'] = [
@@ -704,6 +909,7 @@ index 090fc91..e804c53 100644
 +        argsText: '{"migration_id":"migration-1"}',
 +        result: JSON.stringify({
 +          display_markdown: '## Migration review',
++          display_tone: 'negative',
 +          proposal: { risk: 'medium' },
 +        }),
 +      },
@@ -716,6 +922,7 @@ index 090fc91..e804c53 100644
 +      'data-display-markdown',
 +      '## Migration review',
 +    );
++    expect(screen.getByTestId('response-content-block-probe')).toHaveAttribute('data-display-tone', 'negative');
 +
 +    fireEvent.click(screen.getByRole('button', { name: 'Collapse step' }));
 +    expect(screen.getByRole('button', { name: 'Expand step' })).toBeInTheDocument();
@@ -759,7 +966,7 @@ index 090fc91..e804c53 100644
 +  });
 +
 diff --git a/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx b/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx
-index bf5b537..90ff9fb 100644
+index bf5b537..9ab102d 100644
 --- a/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx
 +++ b/packages/trueforge-ui/test/containers/ToolGroupContainer.test.tsx
 @@ -5,0 +6 @@ import { describe, expect, it } from 'vitest';
@@ -793,7 +1000,7 @@ index bf5b537..90ff9fb 100644
 +    <div data-testid={`${title.toLowerCase()}-content-block`} data-display-markdown={displayMarkdown}>
 +      {content}
 +    </div>
-@@ -66,0 +84,52 @@ describe('AgentSteps grouping', () => {
+@@ -66,0 +84,99 @@ describe('AgentSteps grouping', () => {
 +
 +  it('keeps a readable result visible when Agent steps is collapsed', () => {
 +    const ToolCallContentBlock = createToolCallContentBlockProbe();
@@ -833,7 +1040,6 @@ index bf5b537..90ff9fb 100644
 +          toolName: 'run_migration_evaluation',
 +          args: {},
 +          approval: { id: 'approval-1', approved: undefined },
-+          interrupt: { type: 'human', payload: {} },
 +        },
 +      ],
 +      false,
@@ -846,18 +1052,67 @@ index bf5b537..90ff9fb 100644
 +    expect(screen.queryByText('ordinary_tool')).not.toBeInTheDocument();
 +    expect(screen.getByRole('button', { name: 'Allow' })).toBeInTheDocument();
 +  });
++
++  it('keeps an approved terminal approval visible outside Agent steps', () => {
++    renderMultiToolMessage(
++      [
++        { type: 'tool-call', toolCallId: 'ordinary', toolName: 'ordinary_tool', args: {}, result: 'checked' },
++        {
++          type: 'tool-call',
++          toolCallId: 'approval',
++          toolName: 'sensitive_tool',
++          args: {},
++          approval: { id: 'approval-1', approved: true },
++        },
++        { type: 'text', text: 'The tool was approved.' },
++      ],
++      false,
++      undefined,
++      { type: 'complete', reason: 'stop' },
++    );
++
++    expect(screen.getByText(/1 tool call/)).toBeInTheDocument();
++    expect(screen.queryByText('ordinary_tool')).not.toBeInTheDocument();
++    expect(screen.getByText('sensitive_tool')).toBeInTheDocument();
++  });
++
++  it('keeps a rejected terminal approval visible outside Agent steps', () => {
++    renderMultiToolMessage(
++      [
++        { type: 'tool-call', toolCallId: 'ordinary', toolName: 'ordinary_tool', args: {}, result: 'checked' },
++        {
++          type: 'tool-call',
++          toolCallId: 'approval',
++          toolName: 'sensitive_tool',
++          args: {},
++          result: { error: 'Tool approval denied' },
++          isError: true,
++          approval: { id: 'approval-1', approved: false },
++        },
++        { type: 'text', text: 'The tool was rejected.' },
++      ],
++      false,
++      undefined,
++      { type: 'complete', reason: 'stop' },
++    );
++
++    expect(screen.getByText(/1 tool call/)).toBeInTheDocument();
++    expect(screen.queryByText('ordinary_tool')).not.toBeInTheDocument();
++    expect(screen.getByText('sensitive_tool')).toBeInTheDocument();
++  });
 diff --git a/packages/trueforge-ui/test/utils/toolCallParsing.test.ts b/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
-index 1653bd5..f189e19 100644
+index 1653bd5..61752c2 100644
 --- a/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
 +++ b/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
 @@ -8,0 +9 @@ import {
 +  isMainChatToolCall,
-@@ -105,0 +107,35 @@ describe('toolCallParsing', () => {
+@@ -105,0 +107,103 @@ describe('toolCallParsing', () => {
 +  it('exposes only non-empty root display markdown from tool results', () => {
 +    expect(
 +      getToolResultContent(
 +        JSON.stringify({
 +          display_markdown: '## Migration review',
++          display_tone: 'positive',
 +          content: [{ text: '{"ok":true}' }],
 +        }),
 +      ),
@@ -865,6 +1120,7 @@ index 1653bd5..f189e19 100644
 +      data: '{\n  "ok": true\n}',
 +      isJson: true,
 +      displayMarkdown: '## Migration review',
++      displayTone: 'positive',
 +    });
 +    expect(getToolResultContent({ display_markdown: '   ', content: [{ text: 'done' }] })).not.toHaveProperty(
 +      'displayMarkdown',
@@ -875,9 +1131,75 @@ index 1653bd5..f189e19 100644
 +        metadata: { display_markdown: 'nested markdown' },
 +      }),
 +    ).not.toHaveProperty('displayMarkdown');
++    expect(
++      getToolResultContent({
++        display_markdown: '## Migration review',
++        display_tone: 'negative',
++      }),
++    ).toMatchObject({ displayTone: 'negative' });
++    expect(
++      getToolResultContent({
++        display_markdown: '## Migration review',
++        display_tone: 'warning',
++      }),
++    ).not.toHaveProperty('displayTone');
++    expect(
++      getToolResultContent({
++        display_markdown: '## Migration review',
++        metadata: { display_tone: 'positive' },
++      }),
++    ).not.toHaveProperty('displayTone');
++    expect(
++      getToolResultContent({
++        display_markdown: '## Migration review',
++        human_report: { verdict: { status: 'rejected' } },
++      }),
++    ).toMatchObject({ displayTone: 'negative' });
++    expect(
++      getToolResultContent({
++        display_markdown: '## Migration review',
++        human_report: { verdict: { status: 'eligible' } },
++      }),
++    ).toMatchObject({ displayTone: 'positive' });
++    expect(
++      getToolResultContent({
++        display_markdown: '## Migration review',
++        human_report: { verdict: { status: 'unknown' } },
++      }),
++    ).not.toHaveProperty('displayTone');
 +  });
 +
-+  it('identifies only approval and root display-markdown calls as main-chat cards', () => {
++  it('keeps a pending approval in the main chat', () => {
++    expect(
++      isMainChatToolCall({
++        status: { type: 'requires-action', reason: 'interrupt' },
++        result: undefined,
++        approval: { id: 'approval-1' },
++      }),
++    ).toBe(true);
++  });
++
++  it('keeps an approved terminal approval in the main chat', () => {
++    expect(
++      isMainChatToolCall({
++        status: { type: 'complete' },
++        result: undefined,
++        approval: { id: 'approval-1', approved: true },
++      }),
++    ).toBe(true);
++  });
++
++  it('keeps a rejected terminal approval in the main chat', () => {
++    expect(
++      isMainChatToolCall({
++        status: { type: 'complete' },
++        result: { error: 'Tool approval denied' },
++        approval: { id: 'approval-1', approved: false },
++      }),
++    ).toBe(true);
++  });
++
++  it('identifies requires-action and only root display-markdown results as main-chat cards', () => {
 +    expect(isMainChatToolCall({ status: { type: 'requires-action', reason: 'interrupt' }, result: undefined })).toBe(
 +      true,
 +    );
