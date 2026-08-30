@@ -1482,7 +1482,7 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
     {
       title: "Run paid OrderDesk comparison",
       description:
-        "Run the exact approved comparison. Sends model API requests and writes evaluation evidence; cannot change repository, customer data, deployments, or migrations.",
+        "Request TrueForge's native approval, then run the exact comparison if allowed. Sends model API requests and writes evaluation evidence; cannot change repository, customer data, deployments, or migrations.",
       inputSchema: RunMigrationEvaluationInputSchema,
       annotations: {
         readOnlyHint: false,

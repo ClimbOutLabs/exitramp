@@ -184,6 +184,40 @@ test("marks timestamped evidence-writing MCP tools as non-idempotent", () => {
   assert.equal(registeredTools.inspect_orderdesk_behavior?.annotations?.idempotentHint, true);
 });
 
+test("describes and annotates the paid runner for a native TrueForge approval gate", () => {
+  const server = buildMcpServer({ evidence_store: new EvidenceStore(".exitramp/test-evidence") });
+  const registeredTools = (
+    server as unknown as {
+      _registeredTools: Record<string, {
+        description?: string;
+        annotations?: {
+          readOnlyHint?: boolean;
+          destructiveHint?: boolean;
+          idempotentHint?: boolean;
+          openWorldHint?: boolean;
+        };
+      }>;
+    }
+  )._registeredTools;
+
+  assert.deepEqual(registeredTools.prepare_migration_evaluation_approval?.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: false,
+  });
+  assert.deepEqual(registeredTools.run_migration_evaluation?.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.match(
+    registeredTools.run_migration_evaluation?.description ?? "",
+    /Request TrueForge's native approval/,
+  );
+});
+
 test("approval-card references must exactly match their immutable artifacts", async () => {
   const directory = await mkdtemp(join(tmpdir(), "exitramp-approval-refs-"));
   try {
