@@ -203,19 +203,7 @@ pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
 pnpm build
-pnpm demo:local
-pnpm demo:approval
 ```
-
-<code>pnpm demo:local</code> compiles and prints all ten prompts, then evaluates
-deterministic fixture trials. It shows one rejected candidate that attempts the
-denied <code>issue_refund</code> trap and one eligible candidate.
-
-The output is explicitly labeled <code>local-simulated</code>. It makes no
-provider, Daytona, or GitHub requests and does not create evidence files.
-
-<code>pnpm demo:approval</code> prints the current human-readable approval
-request without making paid calls.
 
 ## Run with TrueForge
 
