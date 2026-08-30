@@ -232,11 +232,11 @@ recorded workflow and outbound access to the Node.js and pnpm registries.
 
 Then ask naturally:
 
-> Evaluate whether we should replace our current OrderDesk model,
+> Should we replace our current OrderDesk model,
 > <code>openai/gpt-5.6-luna</code>, with
 > <code>together/openai/gpt-oss-20b</code> using the current
-> <code>main</code> branch of <code>ClimbOutLabs/exitramp</code>. Show me the
-> decision before any paid comparison starts.
+> <code>main</code> branch of <code>ClimbOutLabs/exitramp</code>? Do the setup,
+> then let me review the exact comparison before either model is called.
 
 The live tool sequence is:
 
@@ -244,14 +244,18 @@ The live tool sequence is:
 repo_snapshot
   → inspect_orderdesk_behavior
   → compile_orderdesk_scenario_plan
+  → sandbox bootstrap + scripts/trueforge-verify.sh
   → record_sandbox_verification
   → prepare_migration_evaluation_approval
-  → [TrueForge human approval]
-  → run_migration_evaluation
+  → run_migration_evaluation call
+      ↳ [TrueForge native Allow or Deny before execution]
 ~~~
 
-TrueForge intercepts the final tool call before it reaches ExitRamp. The user
-must choose Allow or Deny in that native card; a chat reply is not approval.
+The agent completes the source and sandbox checks in that first turn. Calling
+<code>run_migration_evaluation</code> creates the native approval card, and
+TrueForge intercepts the call before it reaches ExitRamp or either evaluated
+model provider. The user must choose Allow or Deny in the card; a chat reply is
+not approval.
 
 Live evaluation requires <code>OPENAI_API_KEY</code> and/or
 <code>TOGETHER_API_KEY</code> for the allowlisted targets. It runs 30 baseline

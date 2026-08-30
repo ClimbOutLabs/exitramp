@@ -84,6 +84,10 @@ test("sandbox bootstrap pins pnpm by both version and content hash", async () =>
   const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
 
   assert.equal(packageJson.packageManager, descriptor);
+  assert.match(bootstrap, /NODE_ARCHIVE="node-v\$\{NODE_VERSION\}-linux-x64\.tar\.gz"/);
+  assert.match(bootstrap, /NODE_ARCHIVE_SHA256="9a33e89093a0d946c54781dcb3ccab4ccf7538a7135286528ca41ca055e9b38f"/);
+  assert.match(bootstrap, /tar -xzf/);
+  assert.doesNotMatch(bootstrap, /\.tar\.xz|tar -xJf/);
   assert.match(bootstrap, /PNPM_SHA224="e2c0ae209c6e56fb502d0a596818c9b298e1bf39f2be3002c5709351"/);
   assert.match(bootstrap, /corepack install --global "\$PNPM_DESCRIPTOR"/);
   assert.match(ciWorkflow, /uses: pnpm\/action-setup@v4/);

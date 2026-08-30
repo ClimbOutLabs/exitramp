@@ -29,9 +29,61 @@ test("checked-in agent binds the exact ExitRamp workflow and native paid-tool ga
   assert.equal(binding.preload, true);
   assert.match(manifest.instructions, /exactly pnpm typecheck and pnpm test/);
   assert.doesNotMatch(manifest.instructions, /pnpm build/);
-  assert.match(manifest.instructions, /Never ask for approval in prose/);
   assert.match(manifest.instructions, /never treat a chat reply as authorization/);
+  assert.match(
+    manifest.instructions,
+    /Complete steps 1 through 5 without ending the turn between successful steps/,
+  );
+  assert.match(
+    manifest.instructions,
+    /Calling run_migration_evaluation .* is how TrueForge displays the native Allow or Deny card/,
+  );
+  assert.match(
+    manifest.instructions,
+    /Do not offer to continue, ask for confirmation in prose, call ask_user_question/,
+  );
+  assert.match(
+    manifest.instructions,
+    /Never set cwd to a work directory that the same command is meant to create or clone/,
+  );
+  assert.match(
+    manifest.instructions,
+    /do not conclude that bash is missing and do not repeat the same failing call unchanged/,
+  );
+  assert.deepEqual(manifest.config?.["sandbox"], {
+    enabled: true,
+    file_downloads: true,
+  });
+  assert.deepEqual(manifest.config?.["ask_user_questions"], { enabled: false });
   assert.ok(manifest.instructions.startsWith(MANAGED_AGENT_MARKER));
+});
+
+test("checked-in agent rejects unsafe execution-config overrides", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-agent-config-"));
+  try {
+    const manifest = await loadAgentManifest();
+    const manifestPath = join(directory, "agent.json");
+    const invalidConfigs = [
+      {
+        ...manifest.config,
+        sandbox: { enabled: false, file_downloads: true },
+      },
+      {
+        ...manifest.config,
+        ask_user_questions: { enabled: true },
+      },
+    ];
+
+    for (const config of invalidConfigs) {
+      await writeFile(manifestPath, JSON.stringify({ ...manifest, config }));
+      await assert.rejects(
+        loadAgentManifest(manifestPath),
+        /must enable the sandbox and disable alternate user-question pauses/,
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("agent manifest rejects every additional or duplicate MCP binding", async () => {
@@ -131,6 +183,44 @@ test("registration refuses to overwrite an unrelated same-name agent", async () 
     /not managed by ExitRamp; refusing to overwrite it/,
   );
   assert.equal(calls, 2);
+});
+
+test("registration upgrades an older managed agent that allowed alternate questions", async () => {
+  const desiredManifest = await loadAgentManifest();
+  const installedManifest = {
+    ...desiredManifest,
+    config: {
+      ...desiredManifest.config,
+      ask_user_questions: { enabled: true },
+    },
+  };
+  let updatedManifest: unknown;
+  const fetchImpl: JsonFetch = async (input, init) => {
+    const pathname = new URL(String(input)).pathname;
+    const method = init?.method ?? "GET";
+    if (pathname.endsWith("/settings/mcp-servers/exitramp/tools")) {
+      return jsonResponse({ data: REQUIRED_EXITRAMP_TOOLS.map((name) => ({ name })) });
+    }
+    if (pathname === "/api/v1/agents" && method === "GET") {
+      return jsonResponse({
+        data: [{ id: "managed-agent-1", name: "exitramp-orderdesk", manifest: installedManifest }],
+      });
+    }
+    if (pathname === "/api/v1/agents/managed-agent-1" && method === "PUT") {
+      const request = JSON.parse(String(init?.body)) as { manifest: unknown };
+      updatedManifest = request.manifest;
+      return jsonResponse({
+        data: { id: "managed-agent-1", name: "exitramp-orderdesk", manifest: request.manifest },
+      });
+    }
+    return jsonResponse({ error: "unexpected request" }, 500);
+  };
+
+  const result = await registerExitRampAgent({ fetchImpl });
+
+  assert.equal(result.action, "updated");
+  const parsed = updatedManifest as { config?: Record<string, unknown> };
+  assert.deepEqual(parsed.config?.["ask_user_questions"], { enabled: false });
 });
 
 test("registration safely reconciles a concurrent create conflict", async () => {
