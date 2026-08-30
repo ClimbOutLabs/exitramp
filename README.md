@@ -71,11 +71,12 @@ cap, output, and constraints before choosing Allow or Deny.*
 *The baseline completed the required work. The candidate did not, so ExitRamp
 rejected the migration.*
 
-### Judge report
+### Plain-English verdict
 
-![A real TrueForge ExitRamp judge report rejecting the candidate after 10 cases and 30 trials per model.](docs/assets/trueforge-results.jpg)
+![The final TrueForge response stating that the lower-cost model should not replace the baseline.](docs/assets/trueforge-results.jpg)
 
-*The report shows test coverage, failed gates, latency, and estimated API cost.*
+*The final response gives the decision and the evidence an engineer needs,
+without repeating the internal tool sequence.*
 
 ## Recorded evaluation
 
