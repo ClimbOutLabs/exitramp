@@ -35,6 +35,7 @@ export interface RuntimeLayout {
   sqlitePath: string;
   runDir: string;
   processFile: string;
+  legacyProcessFile: string;
   stopRequestFile: string;
   startLockFile: string;
   installManifestPath: string;
@@ -53,6 +54,13 @@ export interface RuntimeProcessRecord {
   heartbeatAt: string;
   commit: typeof TRUEFORGE_COMMIT;
   stopRequested?: boolean;
+}
+
+interface RuntimeProcessHeartbeatRecord {
+  manager: typeof MANAGER_ID;
+  instanceId: string;
+  managerPid: number;
+  heartbeatAt: string;
 }
 
 type RuntimeLifecycleOperation = "install" | "start" | "stop";
@@ -123,7 +131,8 @@ export function runtimeLayout(repoRoot: string): RuntimeLayout {
     dataDir: join(managedRoot, "data"),
     sqlitePath: join(managedRoot, "data", "db.sqlite"),
     runDir: join(managedRoot, "run"),
-    processFile: join(managedRoot, "run", "processes.json"),
+    processFile: join(managedRoot, "run", "processes.v2.json"),
+    legacyProcessFile: join(managedRoot, "run", "processes.json"),
     stopRequestFile: join(managedRoot, "run", "stop-request.json"),
     startLockFile: join(managedRoot, "run", "start.lock"),
     installManifestPath: join(managedRoot, "runtime.json"),
@@ -131,6 +140,14 @@ export function runtimeLayout(repoRoot: string): RuntimeLayout {
     patchPath: join(root, PATCH_RELATIVE_PATH),
     evidenceDir: join(root, ".exitramp", "evidence"),
   };
+}
+
+export function runtimeProcessHeartbeatPath(
+  layout: RuntimeLayout,
+  instanceId: string,
+): string {
+  const identity = createHash("sha256").update(instanceId).digest("hex");
+  return join(layout.runDir, `processes.${identity}.heartbeat.json`);
 }
 
 function assertInside(parent: string, target: string, label: string): void {
@@ -311,12 +328,14 @@ export async function writeRuntimeStateJson(
   await mkdir(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${String(process.pid)}.${operations.temporaryId()}.tmp`;
   let primaryError: unknown;
+  let committed = false;
   try {
     await operations.write(temporaryPath, `${JSON.stringify(value, null, 2)}\n`);
     for (let attempt = 0; ; attempt += 1) {
       await beforeReplaceAttempt?.();
       try {
         await operations.replace(temporaryPath, path);
+        committed = true;
         break;
       } catch (error) {
         const delay = RUNTIME_STATE_REPLACE_RETRY_DELAYS_MS[attempt];
@@ -331,7 +350,7 @@ export async function writeRuntimeStateJson(
     try {
       await operations.remove(temporaryPath);
     } catch (cleanupError) {
-      if (primaryError === undefined) throw cleanupError;
+      if (!committed && primaryError === undefined) throw cleanupError;
     }
   }
 }
@@ -482,7 +501,7 @@ async function installTrueForgeRuntimeLocked(
   reservation: RuntimeLifecycleReservation,
 ): Promise<void> {
   assertManagedLayout(layout);
-  await assertRuntimeStoppedForInstall(layout);
+  await assertRuntimeStoppedForInstall(layout, reservation);
   await checkRuntimePrerequisites(layout.repoRoot);
   const patchSha256 = await currentPatchSha(layout);
   const current = await verifyRuntimeInstallation(layout);
@@ -579,12 +598,15 @@ function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return error instanceof Error
+      && (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
-async function readProcessRecord(layout: RuntimeLayout): Promise<RuntimeProcessRecord | undefined> {
+async function readProcessDescriptor(
+  layout: RuntimeLayout,
+): Promise<RuntimeProcessRecord | undefined> {
   if (!(await exists(layout.processFile))) return undefined;
   try {
     const record = await readJson<RuntimeProcessRecord>(layout.processFile);
@@ -612,6 +634,40 @@ async function readProcessRecord(layout: RuntimeLayout): Promise<RuntimeProcessR
   }
 }
 
+async function readProcessHeartbeat(
+  layout: RuntimeLayout,
+  descriptor: Pick<RuntimeProcessRecord, "instanceId" | "managerPid">,
+): Promise<RuntimeProcessHeartbeatRecord | undefined> {
+  try {
+    const heartbeat = await readJson<RuntimeProcessHeartbeatRecord>(
+      runtimeProcessHeartbeatPath(layout, descriptor.instanceId),
+    );
+    if (
+      heartbeat.manager !== MANAGER_ID
+      || heartbeat.instanceId !== descriptor.instanceId
+      || heartbeat.managerPid !== descriptor.managerPid
+      || typeof heartbeat.heartbeatAt !== "string"
+      || !Number.isFinite(Date.parse(heartbeat.heartbeatAt))
+    ) {
+      return undefined;
+    }
+    return heartbeat;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readProcessRecord(layout: RuntimeLayout): Promise<RuntimeProcessRecord | undefined> {
+  const descriptor = await readProcessDescriptor(layout);
+  if (descriptor === undefined) return undefined;
+  const heartbeat = await readProcessHeartbeat(layout, descriptor);
+  if (heartbeat === undefined) return undefined;
+  return {
+    ...descriptor,
+    heartbeatAt: heartbeat.heartbeatAt,
+  };
+}
+
 async function readStopRequest(
   layout: RuntimeLayout,
 ): Promise<RuntimeStopRequestRecord | undefined> {
@@ -633,16 +689,6 @@ async function readStopRequest(
   }
 }
 
-async function removeStopRequestIfOwned(
-  layout: RuntimeLayout,
-  instanceId: string,
-): Promise<boolean> {
-  const request = await readStopRequest(layout);
-  if (request === undefined || request.instanceId !== instanceId) return false;
-  await rm(layout.stopRequestFile, { force: true });
-  return true;
-}
-
 function leaseIsFresh(heartbeatAt: string, now = Date.now()): boolean {
   const age = now - Date.parse(heartbeatAt);
   return Number.isFinite(age) && age >= -LIFECYCLE_LEASE_MS && age <= LIFECYCLE_LEASE_MS;
@@ -657,7 +703,10 @@ export function runtimeManagerLeaseIsActive(
     && isAlive(record.managerPid);
 }
 
-async function assertRuntimeStoppedForInstall(layout: RuntimeLayout): Promise<void> {
+async function assertRuntimeStoppedForInstall(
+  layout: RuntimeLayout,
+  reservation: RuntimeLifecycleReservation,
+): Promise<void> {
   const processFileExists = await exists(layout.processFile);
   const record = await readProcessRecord(layout);
   if (runtimeManagerLeaseIsActive(record)) {
@@ -676,13 +725,8 @@ async function assertRuntimeStoppedForInstall(layout: RuntimeLayout): Promise<vo
       + "Stop the existing services first.",
     );
   }
-  if (processFileExists) {
-    if (record === undefined) {
-      await rm(layout.processFile, { force: true });
-    } else {
-      await removeProcessRecordIfOwned(layout, record);
-    }
-  }
+  if (processFileExists) await removeProcessDescriptorUnderReservation(layout, reservation);
+  await removeInactiveLegacyProcessFile(layout, reservation);
   await rm(layout.stopRequestFile, { force: true });
 }
 
@@ -699,9 +743,88 @@ export async function removeProcessRecordIfOwned(
   layout: RuntimeLayout,
   expected: Pick<RuntimeProcessRecord, "instanceId" | "managerPid">,
 ): Promise<boolean> {
-  const current = await readProcessRecord(layout);
-  if (current === undefined || !sameProcessRecordOwner(current, expected)) return false;
+  const descriptor = await readProcessDescriptor(layout);
+  await rm(runtimeProcessHeartbeatPath(layout, expected.instanceId), { force: true });
+  return descriptor !== undefined && sameProcessRecordOwner(descriptor, expected);
+}
+
+export async function publishProcessDescriptor(
+  layout: RuntimeLayout,
+  record: RuntimeProcessRecord,
+  reservation: RuntimeLifecycleReservation,
+): Promise<void> {
+  await reservation.assertOwned();
+  let handle;
+  let created = false;
+  let committed = false;
+  try {
+    handle = await open(layout.processFile, "wx");
+    created = true;
+    await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    await handle.sync();
+    committed = true;
+  } finally {
+    await handle?.close().catch(() => undefined);
+    if (created && !committed) await rm(layout.processFile, { force: true });
+  }
+}
+
+async function removeProcessDescriptorUnderReservation(
+  layout: RuntimeLayout,
+  reservation: RuntimeLifecycleReservation,
+  expected?: Pick<RuntimeProcessRecord, "instanceId" | "managerPid">,
+): Promise<boolean> {
+  await reservation.assertOwned();
+  const descriptor = await readProcessDescriptor(layout);
+  if (descriptor === undefined) {
+    if (expected !== undefined) return false;
+    await rm(layout.processFile, { force: true });
+    return true;
+  }
+  if (expected !== undefined && !sameProcessRecordOwner(descriptor, expected)) {
+    return false;
+  }
+  await rm(runtimeProcessHeartbeatPath(layout, descriptor.instanceId), { force: true });
   await rm(layout.processFile, { force: true });
+  return true;
+}
+
+async function removeInactiveLegacyProcessFile(
+  layout: RuntimeLayout,
+  reservation: RuntimeLifecycleReservation,
+): Promise<boolean> {
+  if (!(await exists(layout.legacyProcessFile))) return false;
+  await reservation.assertOwned();
+  let managerPid: number;
+  try {
+    const legacy = await readJson<{ manager?: string; managerPid?: number }>(
+      layout.legacyProcessFile,
+    );
+    if (
+      legacy.manager !== MANAGER_ID
+      || !Number.isSafeInteger(legacy.managerPid)
+      || (legacy.managerPid ?? 0) <= 0
+    ) {
+      throw new Error("invalid legacy manager identity");
+    }
+    managerPid = legacy.managerPid as number;
+  } catch {
+    throw new Error(
+      `The legacy runtime record at ${layout.legacyProcessFile} is unreadable. Refusing to delete it automatically.`,
+    );
+  }
+  if (isAlive(managerPid)) {
+    throw new Error(
+      `A legacy ExitRamp runtime manager may still be running as PID ${String(managerPid)}. Stop that terminal before starting this runtime version.`,
+    );
+  }
+  const health = await localhostRuntimeHealth();
+  if (health.trueforge || health.exitramp) {
+    throw new Error(
+      "Legacy runtime services are still responding. Refusing to delete their ownership record.",
+    );
+  }
+  await rm(layout.legacyProcessFile, { force: true });
   return true;
 }
 
@@ -757,14 +880,10 @@ async function readLifecycleLease(
 }
 
 async function lifecycleReservationIsActive(
-  layout: RuntimeLayout,
+  _layout: RuntimeLayout,
   reservation: RuntimeLifecycleReservationRecord,
 ): Promise<boolean> {
-  if (!isAlive(reservation.managerPid)) return false;
-  const lease = await readLifecycleLease(layout, reservation);
-  return lease === undefined
-    ? leaseIsFresh(reservation.startedAt)
-    : leaseIsFresh(lease.heartbeatAt);
+  return isAlive(reservation.managerPid);
 }
 
 async function removeStartReservationIfOwned(
@@ -984,10 +1103,13 @@ export async function stopTrueForgeRuntime(layout: RuntimeLayout): Promise<void>
           + "No persisted PID was signaled and no ownership metadata was deleted.",
         );
       }
-      if (processFileExists) await rm(layout.processFile, { force: true });
+      if (processFileExists) {
+        await removeProcessDescriptorUnderReservation(layout, reservation);
+      }
+      const removedLegacy = await removeInactiveLegacyProcessFile(layout, reservation);
       await rm(layout.stopRequestFile, { force: true });
       process.stdout.write(
-        processFileExists
+        processFileExists || removedLegacy
           ? "Discarded an unverifiable stale runtime record; no process was signaled.\n"
           : "No ExitRamp-managed local runtime is recorded.\n",
       );
@@ -1021,8 +1143,8 @@ export async function stopTrueForgeRuntime(layout: RuntimeLayout): Promise<void>
         + "No success was reported and no remaining PID was signaled.",
       );
     }
-    await removeProcessRecordIfOwned(layout, record);
-    await removeStopRequestIfOwned(layout, record.instanceId);
+    await removeProcessDescriptorUnderReservation(layout, reservation, record);
+    await rm(layout.stopRequestFile, { force: true });
     process.stdout.write("Stopped the ExitRamp-managed TrueForge and MCP processes.\n");
   } finally {
     if (!(await reservation.release())) {
@@ -1248,9 +1370,11 @@ function beginRuntimeManagerHeartbeat(
     }
     if (stopped) return;
     await writer.write({
-      ...current,
+      manager: MANAGER_ID,
+      instanceId: owner.instanceId,
+      managerPid: owner.managerPid,
       heartbeatAt: new Date().toISOString(),
-    });
+    } satisfies RuntimeProcessHeartbeatRecord);
   };
 
   const timer = setInterval(() => {
@@ -1317,17 +1441,6 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
   let runtime: SpawnedRuntime | undefined;
   let ownedRecord: RuntimeProcessRecord | undefined;
   let managerHeartbeat: RuntimeManagerHeartbeat | undefined;
-  const processRecordWriter = createRuntimeStateWriter(
-    layout.processFile,
-    DEFAULT_RUNTIME_STATE_FILE_OPERATIONS,
-    async () => {
-      if (ownedRecord === undefined) return;
-      const current = await readProcessRecord(layout);
-      if (current === undefined || !sameProcessRecordOwner(current, ownedRecord)) {
-        throw new Error("The runtime manager lost ownership of its process record.");
-      }
-    },
-  );
   const launchedChildren: ManagedChildProcess[] = [];
   let reservationReleased = false;
   let evidenceDir = layout.evidenceDir;
@@ -1350,12 +1463,9 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
       );
     }
     if (processFileExists) {
-      if (existingRecord === undefined) {
-        await rm(layout.processFile, { force: true });
-      } else {
-        await removeProcessRecordIfOwned(layout, existingRecord);
-      }
+      await removeProcessDescriptorUnderReservation(layout, reservation);
     }
+    await removeInactiveLegacyProcessFile(layout, reservation);
     await rm(layout.stopRequestFile, { force: true });
 
     await checkRuntimePrerequisites(layout.repoRoot);
@@ -1441,9 +1551,23 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
       heartbeatAt: now,
       commit: TRUEFORGE_COMMIT,
     };
-    await processRecordWriter.write(record);
+    const processHeartbeatWriter = createRuntimeStateWriter(
+      runtimeProcessHeartbeatPath(layout, record.instanceId),
+    );
+    await processHeartbeatWriter.write({
+      manager: MANAGER_ID,
+      instanceId: record.instanceId,
+      managerPid: record.managerPid,
+      heartbeatAt: now,
+    } satisfies RuntimeProcessHeartbeatRecord);
+    try {
+      await publishProcessDescriptor(layout, record, reservation);
+    } catch (error) {
+      await rm(runtimeProcessHeartbeatPath(layout, record.instanceId), { force: true });
+      throw error;
+    }
     ownedRecord = record;
-    managerHeartbeat = beginRuntimeManagerHeartbeat(layout, record, processRecordWriter);
+    managerHeartbeat = beginRuntimeManagerHeartbeat(layout, record, processHeartbeatWriter);
     if (!(await reservation.release())) {
       throw new Error("The start lifecycle reservation was lost before runtime publication.");
     }
@@ -1462,7 +1586,6 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
     }
     if (terminationError === undefined && ownedRecord !== undefined) {
       await removeProcessRecordIfOwned(layout, ownedRecord);
-      await removeStopRequestIfOwned(layout, ownedRecord.instanceId);
     }
     if (terminationError !== undefined) {
       throw new AggregateError(
@@ -1491,7 +1614,6 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
       await terminateRuntime(startedRuntime);
       await heartbeat.stop();
       await removeProcessRecordIfOwned(layout, startedRecord);
-      await removeStopRequestIfOwned(layout, startedRecord.instanceId);
     })();
     stopInFlight = attempt.catch(error => {
       stopping = false;
