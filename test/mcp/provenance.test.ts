@@ -15,6 +15,7 @@ import {
   githubTokenForRepository,
   loadEvaluationEvidenceReferences,
   loadMigrationEvaluationApproval,
+  NATIVE_APPROVAL_OPERATOR_INSTRUCTION,
   loadSandboxVerification,
   prepareMigrationEvaluationApproval,
   persistCompletedMigrationEvaluation,
@@ -217,6 +218,8 @@ test("describes and annotates the paid runner for a native TrueForge approval ga
     registeredTools.run_migration_evaluation?.description ?? "",
     /Request TrueForge's native approval/,
   );
+  assert.match(NATIVE_APPROVAL_OPERATOR_INSTRUCTION, /native Allow or Deny card/);
+  assert.match(NATIVE_APPROVAL_OPERATOR_INSTRUCTION, /before either model is contacted/);
 });
 
 test("approval-card references must exactly match their immutable artifacts", async () => {
