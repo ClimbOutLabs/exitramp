@@ -1,0 +1,1200 @@
+diff --git a/.changeset/human-readable-tool-review-cards.md b/.changeset/human-readable-tool-review-cards.md
+new file mode 100644
+index 0000000..ab9130a
+--- /dev/null
++++ b/.changeset/human-readable-tool-review-cards.md
+@@ -0,0 +1,6 @@
++---
++'@truefoundry/trueforge': patch
++'@truefoundry/trueforge-ui': patch
++---
++
++Render scalar approval requests and opt-in `display_markdown` tool results as human-readable cards while preserving the exact JSON payload and native approval controls.
+diff --git a/packages/frontend/src/App.tsx b/packages/frontend/src/App.tsx
+index 41db8fb..e3e8fc9 100644
+--- a/packages/frontend/src/App.tsx
++++ b/packages/frontend/src/App.tsx
+@@ -13,0 +14 @@ import { GetStartedScreen } from './GetStartedScreen';
++import { HumanReadableToolCallContent } from './HumanReadableToolCallContent';
+@@ -99 +100,7 @@ export function App() {
+-  const overrides: SlotOverrides = useMemo(() => ({ ShellActionsActionSlot: LogoutButton }), []);
++  const overrides: SlotOverrides = useMemo(
++    () => ({
++      ShellActionsActionSlot: LogoutButton,
++      ToolCallContentBlock: HumanReadableToolCallContent,
++    }),
++    [],
++  );
+diff --git a/packages/frontend/src/HumanReadableToolCallContent.tsx b/packages/frontend/src/HumanReadableToolCallContent.tsx
+new file mode 100644
+index 0000000..c534586
+--- /dev/null
++++ b/packages/frontend/src/HumanReadableToolCallContent.tsx
+@@ -0,0 +1,105 @@
++import { Markdown, ToolCallContentBlock, type ToolCallContentBlockProps } from '@truefoundry/trueforge-ui';
++import { useState } from 'react';
++import { getToolPresentation } from './toolPresentation';
++
++function TechnicalDetails({
++  content,
++  copyValue,
++  dataTestPrefix,
++}: {
++  content: string;
++  copyValue: string;
++  dataTestPrefix?: string;
++}) {
++  const [copied, setCopied] = useState(false);
++
++  const copyExactPayload = () => {
++    void navigator.clipboard.writeText(copyValue).then(() => {
++      setCopied(true);
++      setTimeout(() => setCopied(false), 1500);
++    });
++  };
++
++  return (
++    <details className="human-tool-card__details">
++      <summary>Technical details</summary>
++      <div className="human-tool-card__payload-actions">
++        <span>Exact JSON sent with this tool call</span>
++        <button type="button" onClick={copyExactPayload}>
++          {copied ? 'Copied' : 'Copy JSON'}
++        </button>
++      </div>
++      <pre data-testid={dataTestPrefix ? `${dataTestPrefix}-exact-json` : undefined}>{content}</pre>
++    </details>
++  );
++}
++
++export function HumanReadableToolCallContent(props: ToolCallContentBlockProps) {
++  const presentation = getToolPresentation({
++    title: props.title,
++    content: props.content,
++    isJson: props.isJson !== false,
++    ...(props.displayMarkdown ? { displayMarkdown: props.displayMarkdown } : {}),
++  });
++
++  if (!presentation) return <ToolCallContentBlock {...props} />;
++
++  const dataTestId = props.dataTestPrefix ? `${props.dataTestPrefix}-content-block` : 'tfy-tool-call-content-block';
++  const className = ['human-tool-card', props.className].filter(Boolean).join(' ');
++  const exactPayload = props.copyValue ?? props.content;
++
++  if (presentation.kind === 'display-markdown') {
++    return (
++      <section
++        aria-label="Human-readable tool result"
++        className={`${className} human-tool-card--result`}
++        data-content={props.content}
++        data-testid={dataTestId}
++      >
++        <header className="human-tool-card__masthead">
++          <span>{props.title}</span>
++          <span className="human-tool-card__status">Readable result</span>
++        </header>
++        <div className="human-tool-card__markdown">
++          <Markdown content={presentation.markdown} readOnly />
++        </div>
++        <TechnicalDetails
++          content={props.content}
++          copyValue={exactPayload}
++          {...(props.dataTestPrefix ? { dataTestPrefix: props.dataTestPrefix } : {})}
++        />
++      </section>
++    );
++  }
++
++  return (
++    <section
++      aria-label="Approval request details"
++      className={`${className} human-tool-card--approval`}
++      data-content={props.content}
++      data-testid={dataTestId}
++    >
++      <header className="human-tool-card__masthead">
++        <span>{presentation.reviewLabel}</span>
++        <span className="human-tool-card__status">Review required</span>
++      </header>
++      <div className="human-tool-card__decision">
++        <span>{presentation.headingLabel ?? 'Requested action'}</span>
++        <h3>{presentation.heading}</h3>
++      </div>
++      <dl className="human-tool-card__facts">
++        {presentation.fields.map(field => (
++          <div className={field.wide ? 'human-tool-card__fact--wide' : undefined} key={field.label}>
++            <dt>{field.label}</dt>
++            <dd>{field.value}</dd>
++          </div>
++        ))}
++      </dl>
++      <TechnicalDetails
++        content={props.content}
++        copyValue={exactPayload}
++        {...(props.dataTestPrefix ? { dataTestPrefix: props.dataTestPrefix } : {})}
++      />
++    </section>
++  );
++}
+diff --git a/packages/frontend/src/index.css b/packages/frontend/src/index.css
+index d3a80c1..71dfa76 100644
+--- a/packages/frontend/src/index.css
++++ b/packages/frontend/src/index.css
+@@ -59,0 +60,182 @@ body {
++
++/* Tool reviews use an audit-sheet treatment: exact facts first, decoration second. */
++.human-tool-card {
++  width: 100%;
++  overflow: hidden;
++  border: 1px solid var(--border, #e4e4e7);
++  border-radius: var(--radius, 0.5rem);
++  background: color-mix(in srgb, var(--card-bg, #fff) 96%, var(--primary-button-bg, #09090b));
++  color: var(--text-primary, #09090b);
++  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-color, #09090b) 8%, transparent);
++  font-family: var(--font-agent-ui, ui-sans-serif, system-ui, sans-serif);
++}
++
++.human-tool-card--approval {
++  box-shadow:
++    inset 3px 0 0 var(--warning-bg, #d97706),
++    0 8px 24px color-mix(in srgb, var(--shadow-color, #09090b) 8%, transparent);
++}
++
++.human-tool-card--result {
++  box-shadow:
++    inset 3px 0 0 var(--success-bg, #16a34a),
++    0 8px 24px color-mix(in srgb, var(--shadow-color, #09090b) 8%, transparent);
++}
++
++.human-tool-card__masthead {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 1rem;
++  padding: 0.6rem 0.85rem;
++  border-bottom: 1px solid var(--border, #e4e4e7);
++  background: color-mix(in srgb, var(--secondary-bg, #f4f4f5) 82%, transparent);
++  color: var(--text-secondary, #62626a);
++  font-size: 0.67rem;
++  font-weight: 700;
++  letter-spacing: 0.09em;
++  line-height: 1.2;
++  text-transform: uppercase;
++}
++
++.human-tool-card__status {
++  padding: 0.15rem 0.48rem;
++  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
++  border-radius: 999px;
++  letter-spacing: 0.055em;
++  white-space: nowrap;
++}
++
++.human-tool-card--approval .human-tool-card__status {
++  color: var(--warning-bg, #d97706);
++}
++
++.human-tool-card--result .human-tool-card__status {
++  color: var(--success-bg, #16a34a);
++}
++
++.human-tool-card__decision {
++  padding: 1rem 1rem 0.85rem;
++  border-bottom: 1px solid var(--border, #e4e4e7);
++}
++
++.human-tool-card__decision > span,
++.human-tool-card__facts dt {
++  display: block;
++  margin-bottom: 0.25rem;
++  color: var(--text-secondary, #62626a);
++  font-size: 0.68rem;
++  font-weight: 700;
++  letter-spacing: 0.06em;
++  line-height: 1.25;
++  text-transform: uppercase;
++}
++
++.human-tool-card__decision h3 {
++  margin: 0;
++  font-size: 0.98rem;
++  font-weight: 650;
++  letter-spacing: -0.012em;
++  line-height: 1.4;
++}
++
++.human-tool-card__facts {
++  display: grid;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  gap: 1px;
++  margin: 0;
++  background: var(--border, #e4e4e7);
++}
++
++.human-tool-card__facts > div {
++  min-width: 0;
++  padding: 0.72rem 0.9rem 0.78rem;
++  background: var(--card-bg, #fff);
++}
++
++.human-tool-card__fact--wide {
++  grid-column: 1 / -1;
++}
++
++.human-tool-card__facts dd {
++  margin: 0;
++  overflow-wrap: anywhere;
++  font-size: 0.78rem;
++  font-weight: 500;
++  line-height: 1.45;
++}
++
++.human-tool-card__markdown {
++  padding: 0.85rem 1rem 0.45rem;
++}
++
++.human-tool-card__markdown .aui-markdown {
++  color: var(--text-primary, #09090b);
++  font-size: 0.78rem;
++}
++
++.human-tool-card__details {
++  padding: 0.7rem 0.9rem 0.78rem;
++  color: var(--text-secondary, #62626a);
++  font-size: 0.72rem;
++}
++
++.human-tool-card__details summary {
++  width: fit-content;
++  cursor: pointer;
++  font-weight: 650;
++}
++
++.human-tool-card__details summary:hover {
++  color: var(--text-primary, #09090b);
++}
++
++.human-tool-card__payload-actions {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 1rem;
++  margin-top: 0.65rem;
++}
++
++.human-tool-card__payload-actions button {
++  flex: none;
++  padding: 0.25rem 0.5rem;
++  border: 1px solid var(--border, #e4e4e7);
++  border-radius: calc(var(--radius, 0.5rem) - 2px);
++  background: var(--secondary-bg, #f4f4f5);
++  color: var(--text-primary, #09090b);
++  cursor: pointer;
++  font: inherit;
++  font-weight: 650;
++}
++
++.human-tool-card__payload-actions button:hover {
++  background: var(--secondary-button-hover, #e4e4e7);
++}
++
++.human-tool-card__details pre {
++  max-height: 14rem;
++  margin: 0.55rem 0 0;
++  overflow: auto;
++  padding: 0.7rem;
++  border: 1px solid var(--border, #e4e4e7);
++  border-radius: calc(var(--radius, 0.5rem) - 2px);
++  background: var(--primary-bg, #fff);
++  color: var(--text-secondary, #62626a);
++  font: 500 0.69rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
++  white-space: pre-wrap;
++  word-break: break-word;
++}
++
++@media (max-width: 36rem) {
++  .human-tool-card__facts {
++    grid-template-columns: 1fr;
++  }
++
++  .human-tool-card__payload-actions {
++    align-items: flex-start;
++    flex-direction: column;
++    gap: 0.5rem;
++  }
++}
+diff --git a/packages/frontend/src/toolPresentation.ts b/packages/frontend/src/toolPresentation.ts
+new file mode 100644
+index 0000000..49b6bfc
+--- /dev/null
++++ b/packages/frontend/src/toolPresentation.ts
+@@ -0,0 +1,120 @@
++type JsonScalar = string | number | boolean | null;
++
++export type ReviewField = {
++  label: string;
++  value: string;
++  wide: boolean;
++};
++
++export type ToolPresentation =
++  | {
++      kind: 'approval-review';
++      reviewLabel: string;
++      heading: string;
++      headingLabel?: string;
++      fields: ReviewField[];
++    }
++  | {
++      kind: 'display-markdown';
++      markdown: string;
++    };
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === 'object' && value != null && !Array.isArray(value);
++}
++
++function isJsonScalar(value: unknown): value is JsonScalar {
++  return value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
++}
++
++function humanizeKey(key: string): string {
++  const words = key
++    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
++    .replace(/[_-]+/g, ' ')
++    .trim();
++  if (!words) return key;
++  return `${words[0]?.toUpperCase() ?? ''}${words.slice(1)}`;
++}
++
++function scalarText(value: JsonScalar): string {
++  if (value === null) return 'null';
++  return String(value);
++}
++
++function isTechnicalField(label: string): boolean {
++  return /(^|\s)(approval (record|id)|evidence|technical|digest|hash)(\s|$)/i.test(label);
++}
++
++function isWideField({ label, value }: { label: string; value: string }): boolean {
++  return (
++    value.length >= 64 ||
++    /(^|\s)(constraints?|policy|limitations?|boundar(y|ies)|checks? completed|test plan|output)(\s|$)/i.test(label)
++  );
++}
++
++function parseApprovalReview(content: string): Extract<ToolPresentation, { kind: 'approval-review' }> | undefined {
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(content);
++  } catch {
++    return undefined;
++  }
++
++  if (!isRecord(parsed)) return undefined;
++  const rootEntries = Object.entries(parsed);
++  if (rootEntries.length !== 1) return undefined;
++
++  const rootEntry = rootEntries[0];
++  if (!rootEntry) return undefined;
++  const [rootKey, nestedValue] = rootEntry;
++  const reviewLabel = humanizeKey(rootKey);
++  if (!/(^|\s)(approval|review|confirmation)(\s|$)/i.test(reviewLabel) || !isRecord(nestedValue)) {
++    return undefined;
++  }
++
++  const nestedEntries = Object.entries(nestedValue);
++  if (nestedEntries.length < 2 || nestedEntries.length > 32) return undefined;
++  const scalarEntries: Array<[string, JsonScalar]> = [];
++  for (const [key, value] of nestedEntries) {
++    if (!isJsonScalar(value)) return undefined;
++    scalarEntries.push([key, value]);
++  }
++
++  const headingEntry = scalarEntries.find(
++    ([key, value]) =>
++      /^(decision|action|summary|title)$/i.test(key) && typeof value === 'string' && value.trim() !== '',
++  );
++  const headingKey = headingEntry?.[0];
++  const headingValue = headingEntry?.[1];
++  const fields = scalarEntries
++    .filter(([key]) => key !== headingKey)
++    .map(([key, value]) => ({ label: humanizeKey(key), value: scalarText(value) }))
++    .filter(field => !isTechnicalField(field.label))
++    .map(field => ({ ...field, wide: isWideField(field) }));
++
++  return {
++    kind: 'approval-review',
++    reviewLabel,
++    heading: typeof headingValue === 'string' ? headingValue : 'Review the exact request before continuing',
++    ...(headingKey ? { headingLabel: humanizeKey(headingKey) } : {}),
++    fields,
++  };
++}
++
++export function getToolPresentation({
++  title,
++  content,
++  isJson,
++  displayMarkdown,
++}: {
++  title: string;
++  content: string;
++  isJson: boolean;
++  displayMarkdown?: string;
++}): ToolPresentation | undefined {
++  if (displayMarkdown?.trim()) {
++    return { kind: 'display-markdown', markdown: displayMarkdown };
++  }
++  if (title !== 'Request' || !isJson) return undefined;
++  return parseApprovalReview(content);
++}
+diff --git a/packages/frontend/tests/toolPresentation.test.ts b/packages/frontend/tests/toolPresentation.test.ts
+new file mode 100644
+index 0000000..36d284b
+--- /dev/null
++++ b/packages/frontend/tests/toolPresentation.test.ts
+@@ -0,0 +1,80 @@
++import assert from 'node:assert/strict';
++import { describe, it } from 'node:test';
++import { getToolPresentation } from '../src/toolPresentation';
++
++describe('getToolPresentation', () => {
++  it('turns a generic nested approval object into labeled review facts', () => {
++    const presentation = getToolPresentation({
++      title: 'Request',
++      isJson: true,
++      content: JSON.stringify({
++        approval_request: {
++          Decision: 'Start the bounded comparison',
++          Models: 'Baseline A and candidate B',
++          'Request cap': 60,
++          Confirmed: false,
++          Constraints: 'Writes evaluation evidence only; performs no migration or deployment mutation.',
++          'Approval record': 'sha256:abc123',
++        },
++      }),
++    });
++
++    assert.deepEqual(presentation, {
++      kind: 'approval-review',
++      reviewLabel: 'Approval request',
++      heading: 'Start the bounded comparison',
++      headingLabel: 'Decision',
++      fields: [
++        { label: 'Models', value: 'Baseline A and candidate B', wide: false },
++        { label: 'Request cap', value: '60', wide: false },
++        { label: 'Confirmed', value: 'false', wide: false },
++        {
++          label: 'Constraints',
++          value: 'Writes evaluation evidence only; performs no migration or deployment mutation.',
++          wide: true,
++        },
++      ],
++    });
++  });
++
++  it('does not reinterpret unrelated or non-scalar request objects', () => {
++    const unrelated = getToolPresentation({
++      title: 'Request',
++      isJson: true,
++      content: JSON.stringify({ config: { mode: 'safe', retries: 2 } }),
++    });
++    const nested = getToolPresentation({
++      title: 'Request',
++      isJson: true,
++      content: JSON.stringify({ approval_request: { Decision: 'Run', targets: ['a', 'b'] } }),
++    });
++
++    assert.equal(unrelated, undefined);
++    assert.equal(nested, undefined);
++  });
++
++  it('uses display markdown only when it is non-empty', () => {
++    assert.deepEqual(
++      getToolPresentation({
++        title: 'Response',
++        isJson: true,
++        content: '{"status":"complete","display_markdown":"## Passed"}',
++        displayMarkdown: '## Passed',
++      }),
++      { kind: 'display-markdown', markdown: '## Passed' },
++    );
++    assert.equal(
++      getToolPresentation({
++        title: 'Response',
++        isJson: true,
++        content: '{"display_markdown":"   "}',
++        displayMarkdown: '   ',
++      }),
++      undefined,
++    );
++  });
++
++  it('fails closed to the stock renderer for invalid JSON', () => {
++    assert.equal(getToolPresentation({ title: 'Request', isJson: true, content: '{"approval_request":' }), undefined);
++  });
++});
+diff --git a/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx b/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx
+index 8a9fc8e..7c23d29 100644
+--- a/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx
++++ b/packages/trueforge-ui/src/atoms/ToolCallContentBlock.tsx
+@@ -14,0 +15 @@ export type ToolCallContentBlockProps = {
++  displayMarkdown?: string;
+diff --git a/packages/trueforge-ui/src/containers/ToolCallContainer.tsx b/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
+index 2fbf21d..e706d0c 100644
+--- a/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
++++ b/packages/trueforge-ui/src/containers/ToolCallContainer.tsx
+@@ -12 +12 @@ import { useTrueFoundryRespondToToolApproval } from '@truefoundry/assistant-ui-r
+-import { useState } from 'react';
++import { useEffect, useRef, useState } from 'react';
+@@ -33,0 +34 @@ import {
++  type ToolResultContent,
+@@ -116 +117 @@ function RequestResponseSlots({
+-  response: { data: string; isJson: boolean };
++  response: ToolResultContent;
+@@ -130 +131,7 @@ function RequestResponseSlots({
+-      <ToolCallContentBlockContainer title="Response" content={response.data} isJson={response.isJson} resizable />
++      <ToolCallContentBlockContainer
++        title="Response"
++        content={response.data}
++        isJson={response.isJson}
++        displayMarkdown={response.displayMarkdown}
++        resizable
++      />
+@@ -143,6 +150,17 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
+-  const [expanded, setExpanded] = useState(isRequiresAction);
+-  const [prevRequiresAction, setPrevRequiresAction] = useState(isRequiresAction);
+-  if (isRequiresAction !== prevRequiresAction) {
+-    setPrevRequiresAction(isRequiresAction);
+-    if (isRequiresAction) setExpanded(true);
+-  }
++  const resultDisplay = getToolResultContent(part.result);
++  const hasCompletedDisplayMarkdown = part.status?.type === 'complete' && resultDisplay.displayMarkdown !== undefined;
++  const [expanded, setExpanded] = useState(isRequiresAction || hasCompletedDisplayMarkdown);
++  const previousRequiresActionRef = useRef(isRequiresAction);
++  const previousCompletedDisplayMarkdownRef = useRef(hasCompletedDisplayMarkdown);
++
++  useEffect(() => {
++    const approvalBecameRequired = isRequiresAction && !previousRequiresActionRef.current;
++    const completedDisplayMarkdownArrived = hasCompletedDisplayMarkdown && !previousCompletedDisplayMarkdownRef.current;
++
++    previousRequiresActionRef.current = isRequiresAction;
++    previousCompletedDisplayMarkdownRef.current = hasCompletedDisplayMarkdown;
++
++    if (approvalBecameRequired || completedDisplayMarkdownArrived) {
++      setExpanded(true);
++    }
++  }, [hasCompletedDisplayMarkdown, isRequiresAction]);
+@@ -241 +258,0 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
+-    const resultDisplay = getToolResultContent(part.result);
+@@ -286 +302,0 @@ export const ToolCallContainer: ToolCallMessagePartComponent = part => {
+-  const resultDisplay = getToolResultContent(part.result);
+diff --git a/packages/trueforge-ui/src/utils/toolCallParsing.ts b/packages/trueforge-ui/src/utils/toolCallParsing.ts
+index 8cbf0f5..196f406 100644
+--- a/packages/trueforge-ui/src/utils/toolCallParsing.ts
++++ b/packages/trueforge-ui/src/utils/toolCallParsing.ts
+@@ -210 +210 @@ export function getJsonDisplayValue(content: string | undefined): {
+-export function getToolResultContent(content: unknown): {
++export type ToolResultContent = {
+@@ -213 +213,4 @@ export function getToolResultContent(content: unknown): {
+-} {
++  displayMarkdown?: string;
++};
++
++export function getToolResultContent(content: unknown): ToolResultContent {
+@@ -217,0 +221,6 @@ export function getToolResultContent(content: unknown): {
++    const displayMarkdown =
++      isUnknownRecord(parsedResult) &&
++      typeof parsedResult.display_markdown === 'string' &&
++      parsedResult.display_markdown.trim().length > 0
++        ? parsedResult.display_markdown
++        : undefined;
+@@ -226 +235,5 @@ export function getToolResultContent(content: unknown): {
+-      return { data: display.value, isJson: display.isJson };
++      return {
++        data: display.value,
++        isJson: display.isJson,
++        ...(displayMarkdown === undefined ? {} : { displayMarkdown }),
++      };
+@@ -229 +242,5 @@ export function getToolResultContent(content: unknown): {
+-    return { data: display.value, isJson: display.isJson };
++    return {
++      data: display.value,
++      isJson: display.isJson,
++      ...(displayMarkdown === undefined ? {} : { displayMarkdown }),
++    };
+diff --git a/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx b/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
+index 090fc91..e804c53 100644
+--- a/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
++++ b/packages/trueforge-ui/test/containers/ToolCallContainer.test.tsx
+@@ -3 +3 @@ import { ThreadPrimitive, type ThreadMessage, type ThreadMessageLike } from '@as
+-import { fireEvent, render, screen } from '@testing-library/react';
++import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+@@ -9,0 +10 @@ import type { ToolCallCardProps } from '@/atoms/ToolCallCard.js';
++import type { ToolCallContentBlockProps } from '@/atoms/ToolCallContentBlock.js';
+@@ -26 +27,7 @@ vi.mock('@truefoundry/assistant-ui-runtime', async importOriginal => {
+-function renderToolCallMessage(content: ThreadMessageLike['content'], overrides?: SlotOverrides) {
++function ToolCallMessageFixture({
++  content,
++  overrides,
++}: {
++  content: ThreadMessageLike['content'];
++  overrides?: SlotOverrides;
++}) {
+@@ -28 +35 @@ function renderToolCallMessage(content: ThreadMessageLike['content'], overrides?
+-  return render(
++  return (
+@@ -33 +40 @@ function renderToolCallMessage(content: ThreadMessageLike['content'], overrides?
+-    </SlotsProvider>,
++    </SlotsProvider>
+@@ -36,0 +44,4 @@ function renderToolCallMessage(content: ThreadMessageLike['content'], overrides?
++function renderToolCallMessage(content: ThreadMessageLike['content'], overrides?: SlotOverrides) {
++  return render(<ToolCallMessageFixture content={content} overrides={overrides} />);
++}
++
+@@ -59,0 +71,8 @@ function createSubAgentCardProbe() {
++function createToolCallContentBlockProbe() {
++  return vi.fn(({ title, content, displayMarkdown }: ToolCallContentBlockProps) => (
++    <div data-testid={`${title.toLowerCase()}-content-block-probe`} data-display-markdown={displayMarkdown}>
++      {content}
++    </div>
++  ));
++}
++
+@@ -100,0 +120,65 @@ describe('ToolCallContainer', () => {
++  it('forwards display markdown and auto-expands a completed result loaded from history', () => {
++    const ToolCallContentBlock = createToolCallContentBlockProbe();
++    const content: ThreadMessageLike['content'] = [
++      {
++        type: 'tool-call',
++        toolCallId: 'migration-1',
++        toolName: 'run_migration_evaluation',
++        args: {},
++        argsText: '{"migration_id":"migration-1"}',
++        result: JSON.stringify({
++          display_markdown: '## Migration review',
++          proposal: { risk: 'medium' },
++        }),
++      },
++    ];
++
++    const { rerender } = renderToolCallMessage(content, { ToolCallContentBlock });
++
++    expect(screen.getByRole('button', { name: 'Collapse step' })).toBeInTheDocument();
++    expect(screen.getByTestId('response-content-block-probe')).toHaveAttribute(
++      'data-display-markdown',
++      '## Migration review',
++    );
++
++    fireEvent.click(screen.getByRole('button', { name: 'Collapse step' }));
++    expect(screen.getByRole('button', { name: 'Expand step' })).toBeInTheDocument();
++    expect(screen.queryByTestId('response-content-block-probe')).not.toBeInTheDocument();
++
++    rerender(<ToolCallMessageFixture content={content} overrides={{ ToolCallContentBlock }} />);
++    expect(screen.getByRole('button', { name: 'Expand step' })).toBeInTheDocument();
++  });
++
++  it('auto-expands when a running tool receives completed display markdown', async () => {
++    const runningContent: ThreadMessageLike['content'] = [
++      {
++        type: 'tool-call',
++        toolCallId: 'migration-1',
++        toolName: 'run_migration_evaluation',
++        args: {},
++        argsText: '{"migration_id":"migration-1"}',
++      },
++    ];
++    const completedContent: ThreadMessageLike['content'] = [
++      {
++        type: 'tool-call',
++        toolCallId: 'migration-1',
++        toolName: 'run_migration_evaluation',
++        args: {},
++        argsText: '{"migration_id":"migration-1"}',
++        result: {
++          display_markdown: '## Migration review',
++          proposal: { risk: 'medium' },
++        },
++      },
++    ];
++    const { rerender } = renderToolCallMessage(runningContent);
++
++    expect(screen.getByRole('button', { name: 'Expand step' })).toBeInTheDocument();
++    rerender(<ToolCallMessageFixture content={completedContent} />);
++
++    await waitFor(() => {
++      expect(screen.getByRole('button', { name: 'Collapse step' })).toBeInTheDocument();
++    });
++  });
++
+diff --git a/packages/trueforge-ui/test/utils/toolCallParsing.test.ts b/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
+index 1653bd5..98e6acf 100644
+--- a/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
++++ b/packages/trueforge-ui/test/utils/toolCallParsing.test.ts
+@@ -105,0 +106,24 @@ describe('toolCallParsing', () => {
++  it('exposes only non-empty root display markdown from tool results', () => {
++    expect(
++      getToolResultContent(
++        JSON.stringify({
++          display_markdown: '## Migration review',
++          content: [{ text: '{"ok":true}' }],
++        }),
++      ),
++    ).toEqual({
++      data: '{\n  "ok": true\n}',
++      isJson: true,
++      displayMarkdown: '## Migration review',
++    });
++    expect(getToolResultContent({ display_markdown: '   ', content: [{ text: 'done' }] })).not.toHaveProperty(
++      'displayMarkdown',
++    );
++    expect(
++      getToolResultContent({
++        content: [{ text: 'done' }],
++        metadata: { display_markdown: 'nested markdown' },
++      }),
++    ).not.toHaveProperty('displayMarkdown');
++  });
++
+diff --git a/packages/trueforge/src/apis/mcpServers.ts b/packages/trueforge/src/apis/mcpServers.ts
+index 1ffe381..90dd319 100644
+--- a/packages/trueforge/src/apis/mcpServers.ts
++++ b/packages/trueforge/src/apis/mcpServers.ts
+@@ -1 +1 @@
+-import { OpenAPIHono, type RouteHandler } from '@hono/zod-openapi';
++import { OpenAPIHono, z, type RouteHandler } from '@hono/zod-openapi';
+@@ -7,0 +8 @@ import { McpServerNameConflictError, type IMcpServerStore, type McpServerRecord
++import type { IModelProviderStore } from '../db/modelProviderStore';
+@@ -31 +32 @@ import type {
+-import { resolveMcpAuthStatus } from '../schemas/mcpServer';
++import { McpServerManifestSchema, resolveMcpAuthStatus } from '../schemas/mcpServer';
+@@ -32,0 +34 @@ import { MissingStoredSecretError, resolveStoredSecretValue, toRedactedSecretVal
++import { zodErrorResponse } from '../zodErrorResponse';
+@@ -36,0 +39 @@ export interface McpServersRouterDeps<TTransaction> {
++  modelProviderStore: IModelProviderStore<TTransaction>;
+@@ -81,2 +84,5 @@ function resolveMcpServerManifestForWrite({
+-  if (incoming.auth?.type !== 'header') {
+-    return incoming;
++  const providerCredentials = incoming.provider_credentials ?? existing?.provider_credentials;
++  const withProviderCredentials =
++    providerCredentials === undefined ? incoming : { ...incoming, provider_credentials: providerCredentials };
++  if (withProviderCredentials.auth?.type !== 'header') {
++    return McpServerManifestSchema.parse(withProviderCredentials);
+@@ -86 +92 @@ function resolveMcpServerManifestForWrite({
+-  for (const [name, value] of Object.entries(incoming.auth.headers)) {
++  for (const [name, value] of Object.entries(withProviderCredentials.auth.headers)) {
+@@ -92,2 +98,2 @@ function resolveMcpServerManifestForWrite({
+-  return {
+-    ...incoming,
++  return McpServerManifestSchema.parse({
++    ...withProviderCredentials,
+@@ -95 +101 @@ function resolveMcpServerManifestForWrite({
+-  };
++  });
+@@ -197,0 +204,3 @@ export function createSettingsMcpServersRouter<TTransaction>(deps: McpServersRou
++      if (error instanceof z.ZodError) {
++        return zodErrorResponse(c, error);
++      }
+@@ -317,0 +327 @@ export function createSettingsMcpServersRouter<TTransaction>(deps: McpServersRou
++      modelProviderStore: deps.modelProviderStore,
+diff --git a/packages/trueforge/src/apis/settings.ts b/packages/trueforge/src/apis/settings.ts
+index 8738d2d..c09b88d 100644
+--- a/packages/trueforge/src/apis/settings.ts
++++ b/packages/trueforge/src/apis/settings.ts
+@@ -43,0 +44 @@ export function createSettingsRouter<TTransaction>(deps: SettingsRouterDeps<TTra
++      modelProviderStore: deps.modelProviderStore,
+diff --git a/packages/trueforge/src/apis/turns.ts b/packages/trueforge/src/apis/turns.ts
+index 5837e43..7bae571 100644
+--- a/packages/trueforge/src/apis/turns.ts
++++ b/packages/trueforge/src/apis/turns.ts
+@@ -163,0 +164 @@ function createTurnResolver(deps: {
++        modelProviderStore,
+diff --git a/packages/trueforge/src/app.ts b/packages/trueforge/src/app.ts
+index ee32e5f..398fb9e 100644
+--- a/packages/trueforge/src/app.ts
++++ b/packages/trueforge/src/app.ts
+@@ -215,0 +216 @@ export function createServerApp<TTransaction>(deps: ServerDeps<TTransaction>) {
++        modelProviderStore: deps.modelProviderStore,
+diff --git a/packages/trueforge/src/db/migrateSqlite.ts b/packages/trueforge/src/db/migrateSqlite.ts
+index 2ddc04d..a1f6496 100644
+--- a/packages/trueforge/src/db/migrateSqlite.ts
++++ b/packages/trueforge/src/db/migrateSqlite.ts
+@@ -2,0 +3 @@ import path from 'node:path';
++import { pathToFileURL } from 'node:url';
+@@ -25,0 +27 @@ export async function migrateSqliteToLatest(db: Kysely<Database>): Promise<void>
++      import: filePath => import(pathToFileURL(filePath).href),
+diff --git a/packages/trueforge/src/runtime/sessionResources.ts b/packages/trueforge/src/runtime/sessionResources.ts
+index 6ba8600..3d8563c 100644
+--- a/packages/trueforge/src/runtime/sessionResources.ts
++++ b/packages/trueforge/src/runtime/sessionResources.ts
+@@ -25,0 +26 @@ import { resolveConfiguredMcpRequestHeaders } from '../schemas/mcpServer';
++import type { McpProviderCredentialBinding } from '../schemas/mcpServer';
+@@ -98,0 +100 @@ function dcrHeadersResolver(params: {
++  providerCredentialHeaders: Record<string, string>;
+@@ -102 +104 @@ function dcrHeadersResolver(params: {
+-  const { record, tokenStore, mcpServerStore, clientName, userRef } = params;
++  const { record, tokenStore, mcpServerStore, providerCredentialHeaders, clientName, userRef } = params;
+@@ -122 +124 @@ function dcrHeadersResolver(params: {
+-    return { headers: result.headers };
++    return { headers: { ...providerCredentialHeaders, ...result.headers } };
+@@ -125,0 +128,24 @@ function dcrHeadersResolver(params: {
++/** Resolve explicit provider-key bindings without exposing key values on any wire response. */
++export async function resolveMcpProviderCredentialHeaders({
++  tenant_id,
++  bindings,
++  store,
++}: {
++  tenant_id: string;
++  bindings: readonly McpProviderCredentialBinding[];
++  store: IModelProviderStore;
++}): Promise<Record<string, string>> {
++  const headers: Record<string, string> = {};
++  for (const binding of bindings) {
++    const provider = await store.getProvider({ tenant_id, name: binding.provider_name });
++    const apiKey = provider?.manifest.auth?.api_key;
++    if (apiKey === undefined) {
++      throw new HTTPException(422, {
++        message: `MCP credential binding requires configured provider "${binding.provider_name}" with an API key`,
++      });
++    }
++    headers[binding.header_name] = apiKey;
++  }
++  return headers;
++}
++
+@@ -134,0 +161 @@ export async function getMcpConnection({
++  modelProviderStore,
+@@ -141,0 +169 @@ export async function getMcpConnection({
++  modelProviderStore: IModelProviderStore;
+@@ -149,0 +178,5 @@ export async function getMcpConnection({
++  const providerCredentialHeaders = await resolveMcpProviderCredentialHeaders({
++    tenant_id,
++    bindings: record.manifest.provider_credentials ?? [],
++    store: modelProviderStore,
++  });
+@@ -156,0 +190 @@ export async function getMcpConnection({
++        providerCredentialHeaders,
+@@ -164 +198,4 @@ export async function getMcpConnection({
+-    headers: resolveConfiguredMcpRequestHeaders(record.manifest),
++    headers: {
++      ...resolveConfiguredMcpRequestHeaders(record.manifest),
++      ...providerCredentialHeaders,
++    },
+diff --git a/packages/trueforge/src/schemas/mcpServer.ts b/packages/trueforge/src/schemas/mcpServer.ts
+index fcd7f3e..2a2e379 100644
+--- a/packages/trueforge/src/schemas/mcpServer.ts
++++ b/packages/trueforge/src/schemas/mcpServer.ts
+@@ -12,0 +13,30 @@ import { NameSchema } from './common';
++const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
++const FORBIDDEN_PROVIDER_CREDENTIAL_HEADERS = new Set([
++  'authorization',
++  'connection',
++  'content-length',
++  'cookie',
++  'host',
++  'proxy-authenticate',
++  'proxy-authorization',
++  'set-cookie',
++  'te',
++  'traceparent',
++  'tracestate',
++  'transfer-encoding',
++  'upgrade',
++]);
++
++function isLoopbackUrl(rawUrl: string): boolean {
++  const hostname = new URL(rawUrl).hostname.toLowerCase();
++  if (hostname === 'localhost' || hostname === '[::1]') {
++    return true;
++  }
++  if (!/^127(?:\.\d{1,3}){3}$/.test(hostname)) {
++    return false;
++  }
++  return hostname
++    .split('.')
++    .every(octet => Number.isInteger(Number(octet)) && Number(octet) >= 0 && Number(octet) <= 255);
++}
++
+@@ -49,0 +80,74 @@ export const McpServerDescriptionSchema = z
++/**
++ * Server-side reference from an MCP request header to an already configured
++ * model-provider credential. The binding stores names only; the provider key
++ * is resolved from the tenant-scoped provider store for each MCP connection.
++ */
++export const McpProviderCredentialBindingSchema = z
++  .object({
++    provider_name: NameSchema,
++    header_name: z
++      .string()
++      .regex(HTTP_HEADER_NAME_PATTERN, 'must be a valid HTTP header name')
++      .describe('HTTP request header that receives the provider API key.'),
++  })
++  .strict()
++  .openapi('McpProviderCredentialBinding');
++
++function refineMcpProviderCredentialBindings(
++  manifest: {
++    url: string;
++    auth?: { type: 'header'; headers: Record<string, string> } | { type: 'dcr' } | undefined;
++    provider_credentials?: { provider_name: string; header_name: string }[] | undefined;
++  },
++  ctx: z.RefinementCtx,
++): void {
++  const providerNames = new Set<string>();
++  const headerNames = new Set<string>();
++  const staticHeaderNames = new Set(
++    manifest.auth?.type === 'header' ? Object.keys(manifest.auth.headers).map(name => name.toLowerCase()) : [],
++  );
++
++  if ((manifest.provider_credentials?.length ?? 0) > 0 && !isLoopbackUrl(manifest.url)) {
++    ctx.addIssue({
++      code: 'custom',
++      message: 'provider_credentials may only be used with a loopback MCP URL',
++      path: ['provider_credentials'],
++    });
++  }
++
++  for (const [index, binding] of (manifest.provider_credentials ?? []).entries()) {
++    if (providerNames.has(binding.provider_name)) {
++      ctx.addIssue({
++        code: 'custom',
++        message: `Duplicate provider_name "${binding.provider_name}"`,
++        path: ['provider_credentials', index, 'provider_name'],
++      });
++    }
++    providerNames.add(binding.provider_name);
++
++    const normalizedHeaderName = binding.header_name.toLowerCase();
++    if (FORBIDDEN_PROVIDER_CREDENTIAL_HEADERS.has(normalizedHeaderName)) {
++      ctx.addIssue({
++        code: 'custom',
++        message: `header_name "${binding.header_name}" is reserved and cannot carry a provider credential`,
++        path: ['provider_credentials', index, 'header_name'],
++      });
++    }
++    if (headerNames.has(normalizedHeaderName)) {
++      ctx.addIssue({
++        code: 'custom',
++        message: `Duplicate header_name "${binding.header_name}"`,
++        path: ['provider_credentials', index, 'header_name'],
++      });
++    }
++    if (staticHeaderNames.has(normalizedHeaderName)) {
++      ctx.addIssue({
++        code: 'custom',
++        message: `header_name "${binding.header_name}" conflicts with a static auth header`,
++        path: ['provider_credentials', index, 'header_name'],
++      });
++    }
++    headerNames.add(normalizedHeaderName);
++  }
++}
++
+@@ -57,0 +162,6 @@ export const McpServerManifestObjectSchema = z
++    provider_credentials: z
++      .array(McpProviderCredentialBindingSchema)
++      .optional()
++      .describe(
++        'Explicit server-side bindings that forward configured model-provider API keys as MCP request headers. Provider keys are never included in this document or API responses.',
++      ),
+@@ -59 +169,2 @@ export const McpServerManifestObjectSchema = z
+-  .strict();
++  .strict()
++  .superRefine(refineMcpProviderCredentialBindings);
+@@ -131,0 +243 @@ export type McpServerManifestAuth = z.infer<typeof McpServerManifestAuthSchema>;
++export type McpProviderCredentialBinding = z.infer<typeof McpProviderCredentialBindingSchema>;
+diff --git a/packages/trueforge/tests/unit/apis/mcpOAuth.test.ts b/packages/trueforge/tests/unit/apis/mcpOAuth.test.ts
+index d340f3f..a7d399c 100644
+--- a/packages/trueforge/tests/unit/apis/mcpOAuth.test.ts
++++ b/packages/trueforge/tests/unit/apis/mcpOAuth.test.ts
+@@ -11,0 +12 @@ import { SqliteMcpServerStore } from '../../../src/db/sqlite/mcp-server-store/Sq
++import { SqliteModelProviderStore } from '../../../src/db/sqlite/model-provider-store/SqliteModelProviderStore';
+@@ -78,0 +80 @@ describe('MCP OAuth authorize + callback', () => {
++  let modelProviderStore: SqliteModelProviderStore;
+@@ -86,0 +89 @@ describe('MCP OAuth authorize + callback', () => {
++    modelProviderStore = new SqliteModelProviderStore(db);
+@@ -91,0 +95 @@ describe('MCP OAuth authorize + callback', () => {
++      modelProviderStore,
+@@ -98,0 +103 @@ describe('MCP OAuth authorize + callback', () => {
++      modelProviderStore,
+@@ -225,0 +231 @@ describe('MCP OAuth authorize + callback', () => {
++      modelProviderStore,
+diff --git a/packages/trueforge/tests/unit/apis/mcpServers.test.ts b/packages/trueforge/tests/unit/apis/mcpServers.test.ts
+index 2cf41b1..bf0c85f 100644
+--- a/packages/trueforge/tests/unit/apis/mcpServers.test.ts
++++ b/packages/trueforge/tests/unit/apis/mcpServers.test.ts
+@@ -12,0 +13 @@ import { SqliteMcpServerStore } from '../../../src/db/sqlite/mcp-server-store/Sq
++import { SqliteModelProviderStore } from '../../../src/db/sqlite/model-provider-store/SqliteModelProviderStore';
+@@ -86,0 +88 @@ describe('mcp-servers routers', () => {
++  let modelProviderStore: SqliteModelProviderStore;
+@@ -100,0 +103 @@ describe('mcp-servers routers', () => {
++    modelProviderStore = new SqliteModelProviderStore(db);
+@@ -105,0 +109 @@ describe('mcp-servers routers', () => {
++      modelProviderStore,
+@@ -118,0 +123 @@ describe('mcp-servers routers', () => {
++      modelProviderStore,
+@@ -178,0 +184,47 @@ describe('mcp-servers routers', () => {
++  it('PUT preserves omitted provider credentials and clears an explicit empty list', async () => {
++    const initial = {
++      type: 'remote' as const,
++      name: 'delegated-settings-mcp',
++      url: 'http://127.0.0.1:8790/mcp',
++      description: 'Loopback MCP with delegated provider credentials.',
++      provider_credentials: [
++        { provider_name: 'delegated-settings-provider', header_name: 'x-provider-key' },
++      ],
++    };
++    const created = await settingsRouter.request('/', putInit(wrapManifest(initial)));
++    expect(created.status).toBe(200);
++
++    const omitted = {
++      type: initial.type,
++      name: initial.name,
++      url: initial.url,
++      description: 'Updated while preserving delegated provider credentials.',
++    };
++    const preserved = await settingsRouter.request('/', putInit(wrapManifest(omitted)));
++    expect(preserved.status).toBe(200);
++    expect(await preserved.json()).toEqual({
++      data: configured({ ...omitted, provider_credentials: initial.provider_credentials }, 'not_required'),
++    });
++    await expect(
++      mcpServerStore.getServer({ tenant_id: TENANT_ID, name: initial.name }),
++    ).resolves.toMatchObject({
++      manifest: { provider_credentials: initial.provider_credentials },
++    });
++
++    const cleared = {
++      ...omitted,
++      description: 'Updated while clearing delegated provider credentials.',
++      provider_credentials: [],
++    };
++    const clearedResponse = await settingsRouter.request('/', putInit(wrapManifest(cleared)));
++    expect(clearedResponse.status).toBe(200);
++    expect(await clearedResponse.json()).toEqual({
++      data: configured(cleared, 'not_required'),
++    });
++    await expect(
++      mcpServerStore.getServer({ tenant_id: TENANT_ID, name: initial.name }),
++    ).resolves.toMatchObject({
++      manifest: { provider_credentials: [] },
++    });
++  });
++
+@@ -608,0 +661 @@ describe('mcp-servers routers', () => {
++      modelProviderStore,
+diff --git a/packages/trueforge/tests/unit/runtime/getMcpConnection.test.ts b/packages/trueforge/tests/unit/runtime/getMcpConnection.test.ts
+index 5c5ee5b..ed1b50b 100644
+--- a/packages/trueforge/tests/unit/runtime/getMcpConnection.test.ts
++++ b/packages/trueforge/tests/unit/runtime/getMcpConnection.test.ts
+@@ -5,0 +6 @@ import { SqliteMcpServerStore } from '../../../src/db/sqlite/mcp-server-store/Sq
++import { SqliteModelProviderStore } from '../../../src/db/sqlite/model-provider-store/SqliteModelProviderStore';
+@@ -8 +9 @@ import { mcpOAuthCallbackUrl } from '../../../src/mcp/auth/mcpOAuthHelpers';
+-import { getMcpConnection } from '../../../src/runtime/sessionResources';
++import { getMcpConnection as getMcpConnectionRuntime } from '../../../src/runtime/sessionResources';
+@@ -12,0 +14 @@ describe('getMcpConnection', () => {
++  let modelProviderStore: SqliteModelProviderStore;
+@@ -14,0 +17,6 @@ describe('getMcpConnection', () => {
++  function getMcpConnection(
++    options: Omit<Parameters<typeof getMcpConnectionRuntime>[0], 'modelProviderStore'>,
++  ) {
++    return getMcpConnectionRuntime({ ...options, modelProviderStore });
++  }
++
+@@ -18,0 +27 @@ describe('getMcpConnection', () => {
++    modelProviderStore = new SqliteModelProviderStore(db);
+@@ -213,0 +223,93 @@ describe('getMcpConnection', () => {
++  it('resolves provider credentials for a loopback MCP and observes key rotation', async () => {
++    const providerManifest = (apiKey: string) => ({
++      type: 'custom' as const,
++      name: 'delegated-provider',
++      base_url: 'https://provider.example.com/v1',
++      auth: { api_key: apiKey },
++      models: [
++        {
++          model_id: 'delegated-model',
++          name: 'delegated-model',
++          properties: { context_length: 128000, max_output_tokens: 4096 },
++        },
++      ],
++    });
++    await modelProviderStore.upsertProvider({
++      tenant_id: TENANT_ID,
++      name: 'delegated-provider',
++      manifest: providerManifest('provider-key-one'),
++    });
++    await mcpServerStore.upsertServer({
++      tenant_id: TENANT_ID,
++      name: 'delegated-mcp',
++      manifest: {
++        type: 'remote',
++        name: 'delegated-mcp',
++        url: 'http://127.0.0.1:8788/mcp',
++        description: 'Loopback MCP with delegated provider credentials.',
++        provider_credentials: [
++          { provider_name: 'delegated-provider', header_name: 'x-provider-key' },
++        ],
++      },
++    });
++
++    const connect = () => getMcpConnection({
++      tenant_id: TENANT_ID,
++      name: 'delegated-mcp',
++      store: mcpServerStore,
++      tokenStore,
++      clientName: 'test-client',
++      userRef: LOCAL_USER_CONTEXT.userRef,
++    });
++    await expect(connect()).resolves.toMatchObject({
++      headers: { 'x-provider-key': 'provider-key-one' },
++    });
++
++    await modelProviderStore.upsertProvider({
++      tenant_id: TENANT_ID,
++      name: 'delegated-provider',
++      manifest: providerManifest('provider-key-two'),
++    });
++    await expect(connect()).resolves.toMatchObject({
++      headers: { 'x-provider-key': 'provider-key-two' },
++    });
++  });
++
++  it('rejects a missing delegated provider with a secret-free 422', async () => {
++    const storedHeaderSecret = 'stored-static-secret-must-not-leak';
++    await mcpServerStore.upsertServer({
++      tenant_id: TENANT_ID,
++      name: 'missing-delegated-provider-mcp',
++      manifest: {
++        type: 'remote',
++        name: 'missing-delegated-provider-mcp',
++        url: 'http://127.0.0.1:8791/mcp',
++        description: 'Loopback MCP whose delegated provider is missing.',
++        auth: { type: 'header', headers: { 'x-static-secret': storedHeaderSecret } },
++        provider_credentials: [
++          { provider_name: 'missing-delegated-provider', header_name: 'x-provider-key' },
++        ],
++      },
++    });
++
++    try {
++      await getMcpConnection({
++        tenant_id: TENANT_ID,
++        name: 'missing-delegated-provider-mcp',
++        store: mcpServerStore,
++        tokenStore,
++        clientName: 'test-client',
++        userRef: LOCAL_USER_CONTEXT.userRef,
++      });
++      throw new Error('expected missing delegated provider to be rejected');
++    } catch (error) {
++      expect(error).toMatchObject({
++        status: 422,
++        message:
++          'MCP credential binding requires configured provider "missing-delegated-provider" with an API key',
++      });
++      expect(String(error)).not.toContain(storedHeaderSecret);
++      expect(JSON.stringify(error)).not.toContain(storedHeaderSecret);
++    }
++  });
++

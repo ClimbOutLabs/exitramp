@@ -15,6 +15,12 @@ export const REQUIRED_EXITRAMP_TOOLS = [
 
 const EXITRAMP_MCP_NAME = "exitramp";
 const EXITRAMP_MCP_URL = "http://127.0.0.1:8788/mcp";
+export const EXITRAMP_MCP_MANIFEST = {
+  type: "remote" as const,
+  name: EXITRAMP_MCP_NAME,
+  url: EXITRAMP_MCP_URL,
+  description: "ExitRamp model migration evaluation tools.",
+};
 const PAID_TOOL = "run_migration_evaluation";
 export const MANAGED_AGENT_MARKER = "ExitRamp managed agent manifest: exitramp-orderdesk/v1.";
 export const EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS = [
@@ -231,7 +237,20 @@ async function bindProviderCredentials(
     `/api/v1/settings/mcp-servers/${EXITRAMP_MCP_NAME}`,
     baseUrl,
   );
-  const currentPayload = await requestJson(fetchImpl, connectorUrl);
+  let currentPayload: unknown;
+  try {
+    currentPayload = await requestJson(fetchImpl, connectorUrl);
+  } catch (error) {
+    if (!(error instanceof TrueForgeRequestError) || error.status !== 404) throw error;
+    currentPayload = await requestJson(
+      fetchImpl,
+      new URL("/api/v1/settings/mcp-servers", baseUrl),
+      {
+        method: "PUT",
+        body: JSON.stringify({ manifest: EXITRAMP_MCP_MANIFEST }),
+      },
+    );
+  }
   const current = McpServerResponseSchema.parse(currentPayload).data;
   assertExitRampConnector(current);
 

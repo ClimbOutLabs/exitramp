@@ -184,7 +184,7 @@ change production systems or customer data.
 | Loopback MCP tools and approval manifest                       | [<code>src/mcp/server.ts</code>](src/mcp/server.ts)                                                                                                                                                                               |
 | TrueForge agent, sandbox receipts, and native approval binding | [<code>agents/exitramp.agent.json</code>](agents/exitramp.agent.json) · [<code>scripts/trueforge-verify.sh</code>](scripts/trueforge-verify.sh) · [<code>src/trueforge/register-agent.ts</code>](src/trueforge/register-agent.ts) |
 
-## Qodo review
+## Qodo Code Review Evidence
 
 [PR #2](https://github.com/ClimbOutLabs/exitramp/pull/2) contains Qodo's
 completed review of ExitRamp's core evaluation path.
@@ -196,7 +196,7 @@ issues.
 
 ## Run it locally
 
-Requirements: Node.js 22.13 or newer and pnpm 11.
+Requirements: Git, Node.js 22.13 or newer, and pnpm 11.
 
 ```bash
 pnpm install --frozen-lockfile
@@ -217,26 +217,45 @@ provider, Daytona, or GitHub requests and does not create evidence files.
 <code>pnpm demo:approval</code> prints the current human-readable approval
 request without making paid calls.
 
-## Run the MCP server
+## Run with TrueForge
 
 ```bash
-pnpm mcp
+pnpm trueforge:runtime:start
 ```
 
-* Health: <code>http://127.0.0.1:8788/healthz</code>
-* MCP: <code>http://127.0.0.1:8788/mcp</code>
+This command installs the pinned, ExitRamp-patched TrueForge 0.1.3 runtime when
+needed, then starts TrueForge and the ExitRamp MCP server as separate localhost
+processes. It works from PowerShell on Windows and from a macOS terminal. Open
+<code>http://127.0.0.1:8790</code>.
 
-Register the MCP URL in TrueForge, then install the checked-in ExitRamp agent:
+The managed TrueForge checkout stays under <code>.trueforge/runtime</code>. Its
+SQLite data stays under <code>.trueforge/data</code>, and ExitRamp evidence stays
+under <code>.exitramp/evidence</code>, so rebuilding the runtime does not erase
+configuration or results. The launcher never modifies another TrueForge
+checkout.
+
+Use another terminal to inspect or stop the stack:
+
+```bash
+pnpm trueforge:runtime:status
+pnpm trueforge:runtime:stop
+```
+
+To install without starting, run <code>pnpm trueforge:runtime:install</code>.
+
+In TrueForge, configure the OpenAI, Together, and Daytona settings once. Then
+install the checked-in ExitRamp agent:
 
 ```bash
 pnpm trueforge:setup
 ```
 
-The setup command checks that TrueForge can see all six ExitRamp tools, binds
-only those tools to the named <code>exitramp-orderdesk</code> agent, and places
-the paid comparison behind TrueForge's native **Allow** or **Deny** control.
-It reuses the OpenAI and Together API keys already saved in TrueForge's provider
-settings.
+The setup command creates the exact localhost ExitRamp connector, checks that
+TrueForge can see all six tools, binds only those tools to the named
+<code>exitramp-orderdesk</code> agent, and places the paid comparison behind
+TrueForge's native **Allow** or **Deny** control. ExitRamp receives the OpenAI
+and Together credentials already saved in TrueForge through that loopback
+connector; there is no second key entry.
 
 Start a new chat with that agent after setup. Existing chats retain the
 configuration they started with.
@@ -283,15 +302,19 @@ approval.
 
 ### Live evaluation
 
-Live evaluation requires <code>OPENAI_API_KEY</code> and/or <code>TOGETHER_API_KEY</code> for the allowlisted targets.
+For the managed TrueForge path, configure the OpenAI and Together providers in
+TrueForge. The local connector passes those saved credentials to the loopback
+MCP server. ExitRamp contacts the evaluated providers only after approval.
 
 It runs 30 baseline attempts, then up to 30 candidate attempts. If the baseline
 fails, the candidate is skipped.
 
 ### Evidence storage
 
-Set <code>EXITRAMP_EVIDENCE_DIR</code> to place immutable evidence on a local
-hard-link-capable filesystem.
+The managed launcher stores immutable evidence under
+<code>.exitramp/evidence</code> by default. Set
+<code>EXITRAMP_EVIDENCE_DIR</code> before either the managed start command or
+<code>pnpm mcp</code> to use another local hard-link-capable filesystem.
 
 If <code>GITHUB_TOKEN</code> is configured, it is sent only for exact <code>owner/repository</code> entries in the comma-separated <code>EXITRAMP_ALLOWED_REPOS</code> allowlist. Other snapshots are
 unauthenticated.

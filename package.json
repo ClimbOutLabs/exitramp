@@ -15,6 +15,10 @@
     "demo:local": "tsx src/demo/local.ts",
     "mcp": "tsx src/mcp/server.ts",
     "test": "tsx --test test/**/*.test.ts",
+    "trueforge:runtime:install": "tsx scripts/trueforge-runtime.ts install",
+    "trueforge:runtime:start": "tsx scripts/trueforge-runtime.ts start",
+    "trueforge:runtime:status": "tsx scripts/trueforge-runtime.ts status",
+    "trueforge:runtime:stop": "tsx scripts/trueforge-runtime.ts stop",
     "trueforge:setup": "tsx src/trueforge/register-agent.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
