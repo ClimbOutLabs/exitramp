@@ -220,6 +220,7 @@ request without making paid calls.
 ## Run with TrueForge
 
 ```bash
+pnpm install --frozen-lockfile
 pnpm trueforge:runtime:start
 ```
 

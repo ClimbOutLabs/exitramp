@@ -19,6 +19,8 @@ export const TRUEFORGE_URL = "http://127.0.0.1:8790";
 export const EXITRAMP_URL = "http://127.0.0.1:8788";
 
 const MANAGER_ID = "exitramp-trueforge-runtime-v1";
+const LIFECYCLE_HEARTBEAT_MS = 500;
+const LIFECYCLE_LEASE_MS = 5_000;
 const PATCH_RELATIVE_PATH = join(
   "integrations",
   "trueforge",
@@ -33,6 +35,7 @@ export interface RuntimeLayout {
   sqlitePath: string;
   runDir: string;
   processFile: string;
+  stopRequestFile: string;
   startLockFile: string;
   installManifestPath: string;
   runtimeMarkerPath: string;
@@ -42,23 +45,42 @@ export interface RuntimeLayout {
 
 export interface RuntimeProcessRecord {
   manager: typeof MANAGER_ID;
+  instanceId: string;
   managerPid: number;
   trueforgePid: number;
   exitrampPid: number;
   startedAt: string;
+  heartbeatAt: string;
   commit: typeof TRUEFORGE_COMMIT;
   stopRequested?: boolean;
 }
 
-interface RuntimeStartReservationRecord {
+type RuntimeLifecycleOperation = "install" | "start" | "stop";
+
+interface RuntimeLifecycleReservationRecord {
   manager: typeof MANAGER_ID;
   managerPid: number;
   nonce: string;
+  operation: RuntimeLifecycleOperation;
   startedAt: string;
 }
 
-interface RuntimeStartReservation {
+interface RuntimeLifecycleLeaseRecord {
+  manager: typeof MANAGER_ID;
+  managerPid: number;
+  nonce: string;
+  heartbeatAt: string;
+}
+
+interface RuntimeLifecycleReservation {
+  assertOwned: () => Promise<void>;
   release: () => Promise<boolean>;
+}
+
+interface RuntimeStopRequestRecord {
+  manager: typeof MANAGER_ID;
+  instanceId: string;
+  requestedAt: string;
 }
 
 interface InstallManifest {
@@ -70,9 +92,17 @@ interface InstallManifest {
   installedAt: string;
 }
 
+export interface ManagedChildProcess {
+  name: string;
+  child: ChildProcess;
+  spawnError?: Error;
+  spawned: Promise<void>;
+  settled: Promise<void>;
+}
+
 interface SpawnedRuntime {
-  trueforge: ChildProcess;
-  exitramp: ChildProcess;
+  trueforge: ManagedChildProcess;
+  exitramp: ManagedChildProcess;
 }
 
 export interface RuntimeStatus {
@@ -94,6 +124,7 @@ export function runtimeLayout(repoRoot: string): RuntimeLayout {
     sqlitePath: join(managedRoot, "data", "db.sqlite"),
     runDir: join(managedRoot, "run"),
     processFile: join(managedRoot, "run", "processes.json"),
+    stopRequestFile: join(managedRoot, "run", "stop-request.json"),
     startLockFile: join(managedRoot, "run", "start.lock"),
     installManifestPath: join(managedRoot, "runtime.json"),
     runtimeMarkerPath: join(runtimeDir, ".exitramp-managed-runtime.json"),
@@ -239,6 +270,17 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+async function writeRuntimeStateJson(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.${String(process.pid)}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await rename(temporaryPath, path);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
 async function currentPatchSha(layout: RuntimeLayout): Promise<string> {
   if (!(await exists(layout.patchPath))) {
     throw new Error(
@@ -354,7 +396,10 @@ async function buildTrueForge(runtimeDir: string): Promise<void> {
   });
 }
 
-export async function installTrueForgeRuntime(layout: RuntimeLayout): Promise<void> {
+async function installTrueForgeRuntimeLocked(
+  layout: RuntimeLayout,
+  reservation: RuntimeLifecycleReservation,
+): Promise<void> {
   assertManagedLayout(layout);
   await assertRuntimeStoppedForInstall(layout);
   await checkRuntimePrerequisites(layout.repoRoot);
@@ -413,6 +458,7 @@ export async function installTrueForgeRuntime(layout: RuntimeLayout): Promise<vo
     };
     await writeJson(join(stagingDir, ".exitramp-managed-runtime.json"), marker);
 
+    await reservation.assertOwned();
     if (await exists(layout.runtimeDir)) {
       const previousDir = join(layout.managedRoot, `runtime.previous-${String(process.pid)}`);
       assertInside(layout.managedRoot, previousDir, "TrueForge previous runtime directory");
@@ -435,6 +481,18 @@ export async function installTrueForgeRuntime(layout: RuntimeLayout): Promise<vo
   }
 }
 
+export async function installTrueForgeRuntime(layout: RuntimeLayout): Promise<void> {
+  assertManagedLayout(layout);
+  const reservation = await acquireRuntimeLifecycleReservation(layout, "install");
+  try {
+    await installTrueForgeRuntimeLocked(layout, reservation);
+  } finally {
+    if (!(await reservation.release())) {
+      throw new Error("The install lifecycle reservation was lost before it could be released.");
+    }
+  }
+}
+
 function isAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
@@ -449,37 +507,79 @@ async function readProcessRecord(layout: RuntimeLayout): Promise<RuntimeProcessR
   if (!(await exists(layout.processFile))) return undefined;
   try {
     const record = await readJson<RuntimeProcessRecord>(layout.processFile);
-    return record.manager === MANAGER_ID ? record : undefined;
+    if (
+      record.manager !== MANAGER_ID
+      || typeof record.instanceId !== "string"
+      || record.instanceId.length === 0
+      || !Number.isSafeInteger(record.managerPid)
+      || record.managerPid <= 0
+      || !Number.isSafeInteger(record.trueforgePid)
+      || record.trueforgePid <= 0
+      || !Number.isSafeInteger(record.exitrampPid)
+      || record.exitrampPid <= 0
+      || typeof record.startedAt !== "string"
+      || !Number.isFinite(Date.parse(record.startedAt))
+      || typeof record.heartbeatAt !== "string"
+      || !Number.isFinite(Date.parse(record.heartbeatAt))
+      || record.commit !== TRUEFORGE_COMMIT
+    ) {
+      return undefined;
+    }
+    return record;
   } catch {
     return undefined;
   }
 }
 
-function runtimeRecordHasLiveProcess(
+async function readStopRequest(
+  layout: RuntimeLayout,
+): Promise<RuntimeStopRequestRecord | undefined> {
+  if (!(await exists(layout.stopRequestFile))) return undefined;
+  try {
+    const request = await readJson<RuntimeStopRequestRecord>(layout.stopRequestFile);
+    if (
+      request.manager !== MANAGER_ID
+      || typeof request.instanceId !== "string"
+      || request.instanceId.length === 0
+      || typeof request.requestedAt !== "string"
+      || !Number.isFinite(Date.parse(request.requestedAt))
+    ) {
+      return undefined;
+    }
+    return request;
+  } catch {
+    return undefined;
+  }
+}
+
+async function removeStopRequestIfOwned(
+  layout: RuntimeLayout,
+  instanceId: string,
+): Promise<boolean> {
+  const request = await readStopRequest(layout);
+  if (request === undefined || request.instanceId !== instanceId) return false;
+  await rm(layout.stopRequestFile, { force: true });
+  return true;
+}
+
+function leaseIsFresh(heartbeatAt: string, now = Date.now()): boolean {
+  const age = now - Date.parse(heartbeatAt);
+  return Number.isFinite(age) && age >= -LIFECYCLE_LEASE_MS && age <= LIFECYCLE_LEASE_MS;
+}
+
+export function runtimeManagerLeaseIsActive(
   record: RuntimeProcessRecord | undefined,
+  now = Date.now(),
 ): boolean {
   return record !== undefined
-    && [record.managerPid, record.trueforgePid, record.exitrampPid].some(isAlive);
+    && leaseIsFresh(record.heartbeatAt, now)
+    && isAlive(record.managerPid);
 }
 
 async function assertRuntimeStoppedForInstall(layout: RuntimeLayout): Promise<void> {
-  if (await exists(layout.startLockFile)) {
-    const reservation = await readStartReservation(layout);
-    if (reservation === undefined) {
-      throw new Error(
-        `Cannot install while the start reservation at ${layout.startLockFile} is unreadable. `
-        + "If no launcher is running, remove that file and try again.",
-      );
-    }
-    if (reservation.managerPid !== process.pid && isAlive(reservation.managerPid)) {
-      throw new Error(
-        `Cannot install while another local-stack start is in progress (manager PID ${String(reservation.managerPid)}).`,
-      );
-    }
-  }
-
+  const processFileExists = await exists(layout.processFile);
   const record = await readProcessRecord(layout);
-  if (runtimeRecordHasLiveProcess(record)) {
+  if (runtimeManagerLeaseIsActive(record)) {
     throw new Error(
       "Cannot install or replace TrueForge while the ExitRamp-managed local stack is running. "
       + "Run pnpm trueforge:runtime:stop first.",
@@ -491,24 +591,32 @@ async function assertRuntimeStoppedForInstall(layout: RuntimeLayout): Promise<vo
   ]);
   if (trueforgeHealth || exitrampHealth) {
     throw new Error(
-      "Cannot install or replace TrueForge while localhost runtime services are running. "
+      `Cannot install or replace TrueForge while localhost runtime services are running${processFileExists && record === undefined ? " with an unverifiable legacy process record" : ""}. `
       + "Stop the existing services first.",
     );
   }
+  if (processFileExists) {
+    if (record === undefined) {
+      await rm(layout.processFile, { force: true });
+    } else {
+      await removeProcessRecordIfOwned(layout, record);
+    }
+  }
+  await rm(layout.stopRequestFile, { force: true });
 }
 
 function sameProcessRecordOwner(
   actual: RuntimeProcessRecord,
-  expected: Pick<RuntimeProcessRecord, "managerPid" | "startedAt">,
+  expected: Pick<RuntimeProcessRecord, "instanceId" | "managerPid">,
 ): boolean {
   return actual.manager === MANAGER_ID
-    && actual.managerPid === expected.managerPid
-    && actual.startedAt === expected.startedAt;
+    && actual.instanceId === expected.instanceId
+    && actual.managerPid === expected.managerPid;
 }
 
 export async function removeProcessRecordIfOwned(
   layout: RuntimeLayout,
-  expected: Pick<RuntimeProcessRecord, "managerPid" | "startedAt">,
+  expected: Pick<RuntimeProcessRecord, "instanceId" | "managerPid">,
 ): Promise<boolean> {
   const current = await readProcessRecord(layout);
   if (current === undefined || !sameProcessRecordOwner(current, expected)) return false;
@@ -516,19 +624,21 @@ export async function removeProcessRecordIfOwned(
   return true;
 }
 
-async function readStartReservation(
+async function readLifecycleReservation(
   layout: RuntimeLayout,
-): Promise<RuntimeStartReservationRecord | undefined> {
+): Promise<RuntimeLifecycleReservationRecord | undefined> {
   if (!(await exists(layout.startLockFile))) return undefined;
   try {
-    const record = await readJson<RuntimeStartReservationRecord>(layout.startLockFile);
+    const record = await readJson<RuntimeLifecycleReservationRecord>(layout.startLockFile);
     if (
       record.manager !== MANAGER_ID
       || !Number.isSafeInteger(record.managerPid)
       || record.managerPid <= 0
       || typeof record.nonce !== "string"
       || record.nonce.length === 0
+      || !["install", "start", "stop"].includes(record.operation)
       || typeof record.startedAt !== "string"
+      || !Number.isFinite(Date.parse(record.startedAt))
     ) {
       return undefined;
     }
@@ -538,11 +648,49 @@ async function readStartReservation(
   }
 }
 
+function lifecycleLeasePath(layout: RuntimeLayout, nonce: string): string {
+  return join(layout.runDir, `lifecycle-${nonce}.lease.json`);
+}
+
+async function readLifecycleLease(
+  layout: RuntimeLayout,
+  reservation: RuntimeLifecycleReservationRecord,
+): Promise<RuntimeLifecycleLeaseRecord | undefined> {
+  const path = lifecycleLeasePath(layout, reservation.nonce);
+  if (!(await exists(path))) return undefined;
+  try {
+    const lease = await readJson<RuntimeLifecycleLeaseRecord>(path);
+    if (
+      lease.manager !== MANAGER_ID
+      || lease.managerPid !== reservation.managerPid
+      || lease.nonce !== reservation.nonce
+      || typeof lease.heartbeatAt !== "string"
+      || !Number.isFinite(Date.parse(lease.heartbeatAt))
+    ) {
+      return undefined;
+    }
+    return lease;
+  } catch {
+    return undefined;
+  }
+}
+
+async function lifecycleReservationIsActive(
+  layout: RuntimeLayout,
+  reservation: RuntimeLifecycleReservationRecord,
+): Promise<boolean> {
+  if (!isAlive(reservation.managerPid)) return false;
+  const lease = await readLifecycleLease(layout, reservation);
+  return lease === undefined
+    ? leaseIsFresh(reservation.startedAt)
+    : leaseIsFresh(lease.heartbeatAt);
+}
+
 async function removeStartReservationIfOwned(
   layout: RuntimeLayout,
-  expected: RuntimeStartReservationRecord,
+  expected: RuntimeLifecycleReservationRecord,
 ): Promise<boolean> {
-  const current = await readStartReservation(layout);
+  const current = await readLifecycleReservation(layout);
   if (
     current === undefined
     || current.managerPid !== expected.managerPid
@@ -551,6 +699,7 @@ async function removeStartReservationIfOwned(
     return false;
   }
   await rm(layout.startLockFile, { force: true });
+  await rm(lifecycleLeasePath(layout, expected.nonce), { force: true });
   return true;
 }
 
@@ -562,7 +711,15 @@ function errorHasCode(error: unknown, code: string): boolean {
 
 export async function acquireRuntimeStartReservation(
   layout: RuntimeLayout,
-): Promise<RuntimeStartReservation> {
+  operation: RuntimeLifecycleOperation = "start",
+): Promise<RuntimeLifecycleReservation> {
+  return await acquireRuntimeLifecycleReservation(layout, operation);
+}
+
+export async function acquireRuntimeLifecycleReservation(
+  layout: RuntimeLayout,
+  operation: RuntimeLifecycleOperation,
+): Promise<RuntimeLifecycleReservation> {
   assertManagedLayout(layout);
   await mkdir(layout.runDir, { recursive: true });
 
@@ -572,22 +729,22 @@ export async function acquireRuntimeStartReservation(
       handle = await open(layout.startLockFile, "wx");
     } catch (error) {
       if (!errorHasCode(error, "EEXIST")) throw error;
-      const existing = await readStartReservation(layout);
+      const existing = await readLifecycleReservation(layout);
       if (existing === undefined) {
         throw new Error(
-          `A start reservation already exists at ${layout.startLockFile}, but it is unreadable. `
-          + "If no launcher is running, remove that file and try again.",
+          `A lifecycle reservation already exists at ${layout.startLockFile}, but it is unreadable. `
+          + "Refusing to guess whether another operation owns it.",
         );
       }
-      if (isAlive(existing.managerPid)) {
+      if (await lifecycleReservationIsActive(layout, existing)) {
         throw new Error(
-          `Another ExitRamp local-stack start is already in progress (manager PID ${String(existing.managerPid)}).`,
+          `Another ExitRamp lifecycle operation is already in progress (${existing.operation}, manager PID ${String(existing.managerPid)}).`,
         );
       }
       if (attempt === 1) {
-        throw new Error("Could not reclaim a stale ExitRamp local-stack start reservation.");
+        throw new Error("Could not reclaim a stale ExitRamp lifecycle reservation.");
       }
-      const latest = await readStartReservation(layout);
+      const latest = await readLifecycleReservation(layout);
       if (
         latest === undefined
         || latest.managerPid !== existing.managerPid
@@ -595,15 +752,23 @@ export async function acquireRuntimeStartReservation(
       ) {
         continue;
       }
+      if (await lifecycleReservationIsActive(layout, latest)) {
+        throw new Error(
+          `Another ExitRamp lifecycle operation became active while reclaiming the ${latest.operation} reservation.`,
+        );
+      }
       await rm(layout.startLockFile, { force: true });
+      await rm(lifecycleLeasePath(layout, latest.nonce), { force: true });
       continue;
     }
 
-    const record: RuntimeStartReservationRecord = {
+    const now = new Date().toISOString();
+    const record: RuntimeLifecycleReservationRecord = {
       manager: MANAGER_ID,
       managerPid: process.pid,
       nonce: randomUUID(),
-      startedAt: new Date().toISOString(),
+      operation,
+      startedAt: now,
     };
     try {
       await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
@@ -613,12 +778,77 @@ export async function acquireRuntimeStartReservation(
       await rm(layout.startLockFile, { force: true });
       throw error;
     }
+    const leasePath = lifecycleLeasePath(layout, record.nonce);
+    try {
+      await writeRuntimeStateJson(leasePath, {
+        manager: MANAGER_ID,
+        managerPid: record.managerPid,
+        nonce: record.nonce,
+        heartbeatAt: now,
+      } satisfies RuntimeLifecycleLeaseRecord);
+    } catch (error) {
+      await removeStartReservationIfOwned(layout, record);
+      throw error;
+    }
+
+    let released = false;
+    let heartbeatError: Error | undefined;
+    let heartbeatWork = Promise.resolve();
+    const heartbeat = async (): Promise<void> => {
+      if (released) return;
+      const current = await readLifecycleReservation(layout);
+      if (
+        current === undefined
+        || current.managerPid !== record.managerPid
+        || current.nonce !== record.nonce
+      ) {
+        throw new Error("The ExitRamp lifecycle reservation was lost.");
+      }
+      if (released) return;
+      await writeRuntimeStateJson(leasePath, {
+        manager: MANAGER_ID,
+        managerPid: record.managerPid,
+        nonce: record.nonce,
+        heartbeatAt: new Date().toISOString(),
+      } satisfies RuntimeLifecycleLeaseRecord);
+    };
+    const timer = setInterval(() => {
+      heartbeatWork = heartbeatWork.then(heartbeat).catch(error => {
+        heartbeatError = error instanceof Error ? error : new Error(String(error));
+        clearInterval(timer);
+      });
+    }, LIFECYCLE_HEARTBEAT_MS);
+    timer.unref();
+
     return {
-      release: async () => await removeStartReservationIfOwned(layout, record),
+      assertOwned: async () => {
+        await heartbeatWork;
+        if (heartbeatError !== undefined) throw heartbeatError;
+        const current = await readLifecycleReservation(layout);
+        if (
+          current === undefined
+          || current.managerPid !== record.managerPid
+          || current.nonce !== record.nonce
+        ) {
+          throw new Error("The ExitRamp lifecycle reservation is no longer owned by this process.");
+        }
+        const lease = await readLifecycleLease(layout, record);
+        if (lease === undefined || !leaseIsFresh(lease.heartbeatAt)) {
+          throw new Error("The ExitRamp lifecycle reservation lease is not current.");
+        }
+      },
+      release: async () => {
+        released = true;
+        clearInterval(timer);
+        await heartbeatWork;
+        const removed = await removeStartReservationIfOwned(layout, record);
+        await rm(leasePath, { force: true });
+        return removed;
+      },
     };
   }
 
-  throw new Error("Could not reserve the ExitRamp local-stack start.");
+  throw new Error("Could not reserve the ExitRamp lifecycle operation.");
 }
 
 export function runtimeEvidenceDirectory(
@@ -630,40 +860,94 @@ export function runtimeEvidenceDirectory(
     : resolve(layout.repoRoot, configured);
 }
 
-async function waitUntilStopped(pids: readonly number[], timeoutMs = 5_000): Promise<void> {
+async function localhostRuntimeHealth(): Promise<{
+  trueforge: boolean;
+  exitramp: boolean;
+}> {
+  const [trueforge, exitramp] = await Promise.all([
+    trueforgeHealthy(),
+    exitrampHealthy(),
+  ]);
+  return { trueforge, exitramp };
+}
+
+async function waitForManagerShutdown(
+  layout: RuntimeLayout,
+  expected: RuntimeProcessRecord,
+  timeoutMs = 15_000,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline && pids.some(isAlive)) {
+  while (Date.now() < deadline) {
+    const current = await readProcessRecord(layout);
+    if (current === undefined || !sameProcessRecordOwner(current, expected)) return true;
+    if (!runtimeManagerLeaseIsActive(current)) {
+      const health = await localhostRuntimeHealth();
+      return !health.trueforge && !health.exitramp;
+    }
     await new Promise(resolvePromise => setTimeout(resolvePromise, 100));
   }
+  return false;
 }
 
 export async function stopTrueForgeRuntime(layout: RuntimeLayout): Promise<void> {
   assertManagedLayout(layout);
-  const record = await readProcessRecord(layout);
-  if (record === undefined) {
-    process.stdout.write("No ExitRamp-managed local runtime is recorded.\n");
-    return;
-  }
+  const reservation = await acquireRuntimeLifecycleReservation(layout, "stop");
+  try {
+    const processFileExists = await exists(layout.processFile);
+    const record = await readProcessRecord(layout);
+    if (record === undefined || !runtimeManagerLeaseIsActive(record)) {
+      const health = await localhostRuntimeHealth();
+      if (health.trueforge || health.exitramp) {
+        throw new Error(
+          "Local runtime services are still responding, but their manager lease is not verifiable. "
+          + "No persisted PID was signaled and no ownership metadata was deleted.",
+        );
+      }
+      if (processFileExists) await rm(layout.processFile, { force: true });
+      await rm(layout.stopRequestFile, { force: true });
+      process.stdout.write(
+        processFileExists
+          ? "Discarded an unverifiable stale runtime record; no process was signaled.\n"
+          : "No ExitRamp-managed local runtime is recorded.\n",
+      );
+      return;
+    }
 
-  const childPids = [record.exitrampPid, record.trueforgePid];
-  const externalManager = record.managerPid !== process.pid && isAlive(record.managerPid);
-  if (externalManager) {
     const current = await readProcessRecord(layout);
-    if (current !== undefined && sameProcessRecordOwner(current, record)) {
-      await writeJson(layout.processFile, { ...current, stopRequested: true });
+    if (
+      current === undefined
+      || !sameProcessRecordOwner(current, record)
+      || !runtimeManagerLeaseIsActive(current)
+    ) {
+      throw new Error("The runtime manager lease changed before the stop request was recorded.");
+    }
+    await writeRuntimeStateJson(layout.stopRequestFile, {
+      manager: MANAGER_ID,
+      instanceId: current.instanceId,
+      requestedAt: new Date().toISOString(),
+    });
+
+    if (!(await waitForManagerShutdown(layout, record))) {
+      throw new Error(
+        "The verified runtime manager did not stop within 15 seconds. "
+        + "Ownership metadata was retained and no child PID was signaled externally.",
+      );
+    }
+    const health = await localhostRuntimeHealth();
+    if (health.trueforge || health.exitramp) {
+      throw new Error(
+        "The runtime manager lease ended, but one or more localhost services remain active. "
+        + "No success was reported and no remaining PID was signaled.",
+      );
+    }
+    await removeProcessRecordIfOwned(layout, record);
+    await removeStopRequestIfOwned(layout, record.instanceId);
+    process.stdout.write("Stopped the ExitRamp-managed TrueForge and MCP processes.\n");
+  } finally {
+    if (!(await reservation.release())) {
+      throw new Error("The stop lifecycle reservation was lost before it could be released.");
     }
   }
-  for (const pid of childPids) {
-    if (isAlive(pid)) process.kill(pid, "SIGTERM");
-  }
-  await waitUntilStopped(childPids);
-  if (externalManager) {
-    await waitUntilStopped([record.managerPid]);
-  }
-  if (!externalManager || !isAlive(record.managerPid)) {
-    await removeProcessRecordIfOwned(layout, record);
-  }
-  process.stdout.write("Stopped the ExitRamp-managed TrueForge and MCP processes.\n");
 }
 
 export function runtimeStopWasRequested(record: RuntimeProcessRecord | undefined): boolean {
@@ -705,75 +989,269 @@ export async function getRuntimeStatus(layout: RuntimeLayout): Promise<RuntimeSt
     trueforgeHealthy(),
     exitrampHealthy(),
   ]);
-  const trueforgeManaged = record !== undefined && isAlive(record.trueforgePid);
-  const exitrampManaged = record !== undefined && isAlive(record.exitrampPid);
+  const verifiedManager = runtimeManagerLeaseIsActive(record);
   return {
     installed: installation.valid,
     installDetail: installation.detail,
-    trueforge: trueforgeHealth ? (trueforgeManaged ? "running" : "occupied") : "stopped",
-    exitramp: exitrampHealth ? (exitrampManaged ? "running" : "occupied") : "stopped",
+    trueforge: trueforgeHealth ? (verifiedManager ? "running" : "occupied") : "stopped",
+    exitramp: exitrampHealth ? (verifiedManager ? "running" : "occupied") : "stopped",
   };
 }
 
-async function waitForHealth(
-  name: string,
+function managedChildHasExited(managed: ManagedChildProcess): boolean {
+  return managed.child.exitCode !== null
+    || managed.child.signalCode !== null
+    || (managed.spawnError !== undefined && managed.child.pid === undefined);
+}
+
+export async function waitForManagedChildExit(
+  managed: ManagedChildProcess,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (managedChildHasExited(managed)) return true;
+  return await new Promise<boolean>(resolvePromise => {
+    const timer = setTimeout(() => resolvePromise(false), timeoutMs);
+    managed.settled.then(() => {
+      clearTimeout(timer);
+      resolvePromise(true);
+    }).catch(() => {
+      clearTimeout(timer);
+      resolvePromise(false);
+    });
+  });
+}
+
+export async function waitForManagedChildHealth(
+  managed: ManagedChildProcess,
   check: () => Promise<boolean>,
-  child: ChildProcess,
   timeoutMs = 90_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`${name} exited before becoming ready (exit ${String(child.exitCode)}).`);
+    if (managed.spawnError !== undefined) {
+      throw new Error(`${managed.name} failed to spawn: ${managed.spawnError.message}`);
+    }
+    if (managedChildHasExited(managed)) {
+      throw new Error(
+        `${managed.name} exited before becoming ready (exit ${String(managed.child.exitCode)}, signal ${String(managed.child.signalCode)}).`,
+      );
     }
     if (await check()) return;
-    await new Promise(resolvePromise => setTimeout(resolvePromise, 400));
+    await Promise.race([
+      managed.settled,
+      new Promise(resolvePromise => setTimeout(resolvePromise, 400)),
+    ]);
   }
-  throw new Error(`${name} did not become ready within ${String(timeoutMs / 1_000)} seconds.`);
+  if (managed.spawnError !== undefined) {
+    throw new Error(`${managed.name} failed to spawn: ${managed.spawnError.message}`);
+  }
+  throw new Error(
+    `${managed.name} did not become ready within ${String(timeoutMs / 1_000)} seconds.`,
+  );
 }
 
-function launchNode(
-  entrypoint: string,
+export function launchManagedProcess(
+  name: string,
+  command: string,
   args: readonly string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-): ChildProcess {
-  return spawn(process.execPath, [entrypoint, ...args], {
+): ManagedChildProcess {
+  const child = spawn(command, [...args], {
     cwd,
     env,
     shell: false,
     windowsHide: true,
     stdio: "inherit",
   });
+  let resolveSpawn!: () => void;
+  let rejectSpawn!: (error: Error) => void;
+  const spawned = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolveSpawn = resolvePromise;
+    rejectSpawn = rejectPromise;
+  });
+  void spawned.catch(() => undefined);
+  const managed: ManagedChildProcess = {
+    name,
+    child,
+    spawned,
+    settled: new Promise<void>(resolvePromise => {
+      child.once("close", () => resolvePromise());
+    }),
+  };
+  child.once("spawn", resolveSpawn);
+  child.on("error", error => {
+    managed.spawnError = error;
+    rejectSpawn(error);
+  });
+  return managed;
+}
+
+function launchNode(
+  name: string,
+  entrypoint: string,
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): ManagedChildProcess {
+  return launchManagedProcess(name, process.execPath, [entrypoint, ...args], cwd, env);
+}
+
+export async function terminateManagedChildren(
+  children: readonly ManagedChildProcess[],
+  gracefulTimeoutMs = 5_000,
+  forceTimeoutMs = 5_000,
+): Promise<void> {
+  for (const managed of children) {
+    if (!managedChildHasExited(managed)) {
+      try {
+        managed.child.kill("SIGTERM");
+      } catch {
+        // The exit verification below decides whether cleanup succeeded.
+      }
+    }
+  }
+  await Promise.all(children.map(async managed => {
+    await waitForManagedChildExit(managed, gracefulTimeoutMs);
+  }));
+
+  const remaining = children.filter(managed => !managedChildHasExited(managed));
+  for (const managed of remaining) {
+    try {
+      managed.child.kill("SIGKILL");
+    } catch {
+      // The exit verification below decides whether cleanup succeeded.
+    }
+  }
+  await Promise.all(remaining.map(async managed => {
+    await waitForManagedChildExit(managed, forceTimeoutMs);
+  }));
+
+  const survivors = children.filter(managed => !managedChildHasExited(managed));
+  if (survivors.length > 0) {
+    throw new Error(
+      `Could not stop managed process${survivors.length === 1 ? "" : "es"}: ${survivors.map(child => child.name).join(", ")}. Ownership metadata was retained.`,
+    );
+  }
 }
 
 async function terminateRuntime(runtime: SpawnedRuntime): Promise<void> {
-  for (const child of [runtime.exitramp, runtime.trueforge]) {
-    if (child.exitCode === null) child.kill("SIGTERM");
-  }
-  await Promise.all([runtime.exitramp, runtime.trueforge].map(async child => {
-    if (child.exitCode !== null) return;
-    await Promise.race([
-      new Promise<void>(resolvePromise => child.once("exit", () => resolvePromise())),
-      new Promise<void>(resolvePromise => setTimeout(resolvePromise, 5_000)),
-    ]);
-  }));
+  await terminateManagedChildren([runtime.exitramp, runtime.trueforge]);
+}
+
+interface RuntimeManagerHeartbeat {
+  failure: Promise<never>;
+  stop: () => Promise<void>;
+}
+
+function beginRuntimeManagerHeartbeat(
+  layout: RuntimeLayout,
+  owner: RuntimeProcessRecord,
+): RuntimeManagerHeartbeat {
+  let stopped = false;
+  let heartbeatWork = Promise.resolve();
+  let rejectFailure!: (error: Error) => void;
+  const failure = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject;
+  });
+  void failure.catch(() => undefined);
+
+  const heartbeat = async (): Promise<void> => {
+    if (stopped) return;
+    const current = await readProcessRecord(layout);
+    if (current === undefined || !sameProcessRecordOwner(current, owner)) {
+      throw new Error("The runtime manager lost ownership of its process record.");
+    }
+    if (stopped) return;
+    await writeRuntimeStateJson(layout.processFile, {
+      ...current,
+      heartbeatAt: new Date().toISOString(),
+    });
+  };
+
+  const timer = setInterval(() => {
+    heartbeatWork = heartbeatWork.then(heartbeat).catch(error => {
+      clearInterval(timer);
+      rejectFailure(error instanceof Error ? error : new Error(String(error)));
+    });
+  }, LIFECYCLE_HEARTBEAT_MS);
+  timer.unref();
+
+  return {
+    failure,
+    stop: async () => {
+      stopped = true;
+      clearInterval(timer);
+      await heartbeatWork;
+    },
+  };
+}
+
+interface StopRequestWatcher {
+  requested: Promise<void>;
+  stop: () => void;
+}
+
+function watchOwnedStopRequest(
+  layout: RuntimeLayout,
+  owner: RuntimeProcessRecord,
+): StopRequestWatcher {
+  let watching = true;
+  const requested = (async () => {
+    while (watching) {
+      const current = await readProcessRecord(layout);
+      if (current === undefined || !sameProcessRecordOwner(current, owner)) {
+        throw new Error("The runtime manager process record changed unexpectedly.");
+      }
+      const request = await readStopRequest(layout);
+      if (request?.instanceId === owner.instanceId) return;
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 100));
+    }
+  })();
+  void requested.catch(() => undefined);
+  return {
+    requested,
+    stop: () => {
+      watching = false;
+    },
+  };
 }
 
 export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void> {
   assertManagedLayout(layout);
-  const reservation = await acquireRuntimeStartReservation(layout);
+  const reservation = await acquireRuntimeLifecycleReservation(layout, "start");
   let runtime: SpawnedRuntime | undefined;
   let ownedRecord: RuntimeProcessRecord | undefined;
+  let managerHeartbeat: RuntimeManagerHeartbeat | undefined;
+  const launchedChildren: ManagedChildProcess[] = [];
+  let reservationReleased = false;
   let evidenceDir = layout.evidenceDir;
 
   try {
+    const processFileExists = await exists(layout.processFile);
     const existingRecord = await readProcessRecord(layout);
-    if (runtimeRecordHasLiveProcess(existingRecord)) {
+    if (runtimeManagerLeaseIsActive(existingRecord)) {
       throw new Error(
         "Cannot start: another ExitRamp-managed local stack is already starting or running.",
       );
     }
+    const existingHealth = await localhostRuntimeHealth();
+    if (existingHealth.trueforge || existingHealth.exitramp) {
+      throw new Error(
+        `Cannot start: TrueForge port is ${existingHealth.trueforge ? "occupied" : "stopped"} and ExitRamp port is ${existingHealth.exitramp ? "occupied" : "stopped"}. `
+        + (processFileExists
+          ? "The saved manager record is stale or unverifiable; no persisted PID was signaled."
+          : "Stop the existing localhost services first."),
+      );
+    }
+    if (processFileExists) {
+      if (existingRecord === undefined) {
+        await rm(layout.processFile, { force: true });
+      } else {
+        await removeProcessRecordIfOwned(layout, existingRecord);
+      }
+    }
+    await rm(layout.stopRequestFile, { force: true });
 
     await checkRuntimePrerequisites(layout.repoRoot);
     const installation = await verifyRuntimeInstallation(layout);
@@ -784,7 +1262,7 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
           + "Run pnpm trueforge:runtime:install before starting it.",
         );
       }
-      await installTrueForgeRuntime(layout);
+      await installTrueForgeRuntimeLocked(layout, reservation);
     }
 
     const initialStatus = await getRuntimeStatus(layout);
@@ -809,68 +1287,143 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
       }
     }
 
-    runtime = {
-      trueforge: launchNode(trueforgeEntry, [], join(layout.runtimeDir, "packages", "trueforge"), {
+    await reservation.assertOwned();
+    const trueforge = launchNode(
+      "TrueForge",
+      trueforgeEntry,
+      [],
+      join(layout.runtimeDir, "packages", "trueforge"),
+      {
         ...process.env,
         HOST: "127.0.0.1",
         NODE_ENV: "production",
         PORT: "8790",
         SQLITE_PATH: layout.sqlitePath,
         STANDALONE: "true",
-      }),
-      exitramp: launchNode(tsxEntry, [exitrampEntry], layout.repoRoot, {
+      },
+    );
+    launchedChildren.push(trueforge);
+    const exitramp = launchNode(
+      "ExitRamp MCP",
+      tsxEntry,
+      [exitrampEntry],
+      layout.repoRoot,
+      {
         ...process.env,
         EXITRAMP_EVIDENCE_DIR: evidenceDir,
         PORT: "8788",
-      }),
+      },
+    );
+    launchedChildren.push(exitramp);
+    runtime = {
+      trueforge,
+      exitramp,
     };
 
-    if (runtime.trueforge.pid === undefined || runtime.exitramp.pid === undefined) {
+    await Promise.all([runtime.trueforge.spawned, runtime.exitramp.spawned]);
+    await reservation.assertOwned();
+    if (runtime.trueforge.child.pid === undefined || runtime.exitramp.child.pid === undefined) {
       throw new Error("Node did not return process IDs for the local services.");
     }
+    const now = new Date().toISOString();
     const record: RuntimeProcessRecord = {
       manager: MANAGER_ID,
+      instanceId: randomUUID(),
       managerPid: process.pid,
-      trueforgePid: runtime.trueforge.pid,
-      exitrampPid: runtime.exitramp.pid,
-      startedAt: new Date().toISOString(),
+      trueforgePid: runtime.trueforge.child.pid,
+      exitrampPid: runtime.exitramp.child.pid,
+      startedAt: now,
+      heartbeatAt: now,
       commit: TRUEFORGE_COMMIT,
     };
-    await writeJson(layout.processFile, record);
+    await writeRuntimeStateJson(layout.processFile, record);
     ownedRecord = record;
+    managerHeartbeat = beginRuntimeManagerHeartbeat(layout, record);
+    if (!(await reservation.release())) {
+      throw new Error("The start lifecycle reservation was lost before runtime publication.");
+    }
+    reservationReleased = true;
   } catch (error) {
-    if (runtime !== undefined) await terminateRuntime(runtime);
-    if (ownedRecord !== undefined) {
+    let terminationError: unknown;
+    if (launchedChildren.length > 0) {
+      try {
+        await terminateManagedChildren(launchedChildren);
+      } catch (caught) {
+        terminationError = caught;
+      }
+    }
+    if (terminationError === undefined && managerHeartbeat !== undefined) {
+      await managerHeartbeat.stop();
+    }
+    if (terminationError === undefined && ownedRecord !== undefined) {
       await removeProcessRecordIfOwned(layout, ownedRecord);
+      await removeStopRequestIfOwned(layout, ownedRecord.instanceId);
+    }
+    if (terminationError !== undefined) {
+      throw new AggregateError(
+        [error, terminationError],
+        "Runtime startup failed and one or more owned child processes could not be stopped.",
+      );
     }
     throw error;
   } finally {
-    await reservation.release();
+    if (!reservationReleased) await reservation.release();
   }
 
   const startedRuntime = runtime;
   const startedRecord = ownedRecord;
-  if (startedRuntime === undefined || startedRecord === undefined) {
+  const heartbeat = managerHeartbeat;
+  if (startedRuntime === undefined || startedRecord === undefined || heartbeat === undefined) {
     throw new Error("The local runtime did not finish starting.");
   }
+  const stopWatcher = watchOwnedStopRequest(layout, startedRecord);
   let stopping = false;
-  const stop = async (): Promise<void> => {
-    if (stopping) return;
+  let stopInFlight: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
+    if (stopInFlight !== undefined) return stopInFlight;
     stopping = true;
-    await terminateRuntime(startedRuntime);
-    await removeProcessRecordIfOwned(layout, startedRecord);
+    const attempt = (async () => {
+      await terminateRuntime(startedRuntime);
+      await heartbeat.stop();
+      await removeProcessRecordIfOwned(layout, startedRecord);
+      await removeStopRequestIfOwned(layout, startedRecord.instanceId);
+    })();
+    stopInFlight = attempt.catch(error => {
+      stopping = false;
+      stopInFlight = undefined;
+      throw error;
+    });
+    return stopInFlight;
   };
   const onSignal = (): void => {
-    void stop().finally(() => process.exit(0));
+    void stop().then(
+      () => process.exit(0),
+      error => {
+        process.exitCode = 1;
+        process.stderr.write(
+          `Failed to stop the local runtime cleanly: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        process.once("SIGINT", onSignal);
+        process.once("SIGTERM", onSignal);
+      },
+    );
   };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 
   try {
-    await Promise.all([
-      waitForHealth("TrueForge", trueforgeHealthy, startedRuntime.trueforge),
-      waitForHealth("ExitRamp MCP", exitrampHealthy, startedRuntime.exitramp),
+    const startupOutcome = await Promise.race([
+      Promise.all([
+        waitForManagedChildHealth(startedRuntime.trueforge, trueforgeHealthy),
+        waitForManagedChildHealth(startedRuntime.exitramp, exitrampHealthy),
+      ]).then(() => "healthy" as const),
+      stopWatcher.requested.then(() => "stop" as const),
+      heartbeat.failure,
     ]);
+    if (startupOutcome === "stop") {
+      await stop();
+      return;
+    }
     process.stdout.write("\nExitRamp local stack is ready.\n");
     process.stdout.write(`TrueForge: ${TRUEFORGE_URL}\n`);
     process.stdout.write(`ExitRamp MCP: ${EXITRAMP_URL}/mcp\n`);
@@ -878,17 +1431,25 @@ export async function startTrueForgeRuntime(layout: RuntimeLayout): Promise<void
     process.stdout.write(`ExitRamp evidence: ${evidenceDir}\n`);
     process.stdout.write("Press Ctrl+C to stop both processes.\n\n");
 
-    await Promise.race([startedRuntime.trueforge, startedRuntime.exitramp].map(async child => {
-      await new Promise<void>((resolvePromise, reject) => {
-        child.once("error", reject);
-        child.once("exit", () => resolvePromise());
-      });
-    }));
-    const latestRecord = await readProcessRecord(layout);
-    if (!stopping && !runtimeStopWasRequested(latestRecord)) {
+    const runtimeOutcome = await Promise.race([
+      startedRuntime.trueforge.settled.then(() => "child" as const),
+      startedRuntime.exitramp.settled.then(() => "child" as const),
+      stopWatcher.requested.then(() => "stop" as const),
+      heartbeat.failure,
+    ]);
+    if (runtimeOutcome === "stop") {
+      await stop();
+      return;
+    }
+    const latestRequest = await readStopRequest(layout);
+    if (
+      !stopping
+      && latestRequest?.instanceId !== startedRecord.instanceId
+    ) {
       throw new Error("One local service exited; both services have been stopped.");
     }
   } finally {
+    stopWatcher.stop();
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
     await stop();
