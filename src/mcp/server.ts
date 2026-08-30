@@ -1405,6 +1405,10 @@ export function renderEvaluationMarkdown(report: EvaluationPrimaryResponse): str
   return lines.join("\n");
 }
 
+export function evaluationDisplayTone(report: EvaluationPrimaryResponse): "positive" | "negative" {
+  return report.human_report.verdict.status === "eligible" ? "positive" : "negative";
+}
+
 export function renderEvaluationErrorMarkdown(evaluationEvidenceId: string): string {
   return [
     "## Paid OrderDesk comparison failed",
@@ -1618,7 +1622,11 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
         const displayMarkdown = renderEvaluationErrorMarkdown(evaluationArtifact.evidence_id);
         return {
           content: [{ type: "text", text: displayMarkdown }],
-          structuredContent: { ...result, display_markdown: cardMarkdown(displayMarkdown) },
+          structuredContent: {
+            ...result,
+            display_markdown: cardMarkdown(displayMarkdown),
+            display_tone: "negative",
+          },
         };
       }
       if (comparison.kind === "baseline_rejected") {
@@ -1641,7 +1649,11 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
         const displayMarkdown = renderEvaluationMarkdown(result);
         return {
           content: [{ type: "text", text: displayMarkdown }],
-          structuredContent: { ...result, display_markdown: cardMarkdown(displayMarkdown) },
+          structuredContent: {
+            ...result,
+            display_markdown: cardMarkdown(displayMarkdown),
+            display_tone: evaluationDisplayTone(result),
+          },
         };
       }
       const evaluationArtifact = await persistCompletedMigrationEvaluation(evidenceStore, {
@@ -1663,7 +1675,11 @@ export function buildMcpServer(options: McpServerOptions = {}): McpServer {
       const displayMarkdown = renderEvaluationMarkdown(result);
       return {
         content: [{ type: "text", text: displayMarkdown }],
-        structuredContent: { ...result, display_markdown: cardMarkdown(displayMarkdown) },
+        structuredContent: {
+          ...result,
+          display_markdown: cardMarkdown(displayMarkdown),
+          display_tone: evaluationDisplayTone(result),
+        },
       };
     },
   );

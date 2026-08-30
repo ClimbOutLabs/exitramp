@@ -11,6 +11,7 @@ import {
   buildMcpServer,
   buildEvaluationPrimaryResponse,
   compileScenarioPlanWithEvidence,
+  evaluationDisplayTone,
   githubTokenForRepository,
   loadEvaluationEvidenceReferences,
   loadMigrationEvaluationApproval,
@@ -601,6 +602,7 @@ test("persists a human-readable terminal baseline rejection without running the 
       terminal.payload.human_report,
       terminal.envelope.evidence_id,
     );
+    assert.equal(evaluationDisplayTone(primary), "negative");
     const baselineText = renderEvaluationMarkdown(primary);
     assert.match(baselineText, /^## Migration evaluation:/);
     assert.match(baselineText, /Baseline .*: 29\/30 passed; hard contract failed/);
@@ -709,6 +711,7 @@ test("returns a bounded completed report while immutable evidence retains the ra
       persisted.payload.human_report,
       persisted.envelope.evidence_id,
     );
+    assert.equal(evaluationDisplayTone(primary), "positive");
     const completedText = renderEvaluationMarkdown(primary);
     assert.match(completedText, /^## Migration evaluation:/);
     assert.match(completedText, /Baseline .*: 30\/30 passed; hard contract passed/);
@@ -817,6 +820,7 @@ test("MCP persists failed paid evaluation accounting with the completed baseline
     });
     const structured = response.structuredContent as Record<string, unknown>;
     assert.equal(structured.status, "error");
+    assert.equal(structured.display_tone, "negative");
     assert.deepEqual(structured.error, { name: "EvaluationAttemptError", message: "candidate provider failed" });
     assert.match(String(structured.evaluation_evidence_id), /^sha256:[a-f0-9]{64}$/);
     assert.equal("observations" in structured, false);
