@@ -235,6 +235,8 @@ pnpm trueforge:setup
 The setup command checks that TrueForge can see all six ExitRamp tools, binds
 only those tools to the named <code>exitramp-orderdesk</code> agent, and places
 the paid comparison behind TrueForge's native **Allow** or **Deny** control.
+It reuses the OpenAI and Together API keys already saved in TrueForge's provider
+settings.
 
 Start a new chat with that agent after setup. Existing chats retain the
 configuration they started with.
