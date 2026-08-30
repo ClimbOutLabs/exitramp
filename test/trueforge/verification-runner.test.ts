@@ -81,8 +81,11 @@ test("sandbox bootstrap pins pnpm by both version and content hash", async () =>
     packageManager?: string;
   };
   const bootstrap = await readFile("scripts/trueforge-verify.sh", "utf8");
+  const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
 
   assert.equal(packageJson.packageManager, descriptor);
   assert.match(bootstrap, /PNPM_SHA224="e2c0ae209c6e56fb502d0a596818c9b298e1bf39f2be3002c5709351"/);
   assert.match(bootstrap, /corepack install --global "\$PNPM_DESCRIPTOR"/);
+  assert.match(ciWorkflow, /uses: pnpm\/action-setup@v4/);
+  assert.doesNotMatch(ciWorkflow, /pnpm\/action-setup@v4\s+with:\s+version:/);
 });
