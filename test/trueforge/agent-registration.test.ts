@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  EXITRAMP_MCP_MANIFEST,
   EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS,
   MANAGED_AGENT_MARKER,
   REQUIRED_EXITRAMP_TOOLS,
@@ -196,6 +197,51 @@ test("registration preserves the connector and binds provider settings before to
     },
   });
   assert.equal("provider_credentials" in bindingRequest, false);
+});
+
+test("first-run registration creates the exact localhost connector before binding it", async () => {
+  const calls: Array<{ method: string; pathname: string; body?: unknown }> = [];
+  let putCalls = 0;
+  const fetchImpl: JsonFetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    calls.push({ method, pathname: url.pathname, ...(body === undefined ? {} : { body }) });
+
+    if (url.pathname === CONNECTOR_PATH && method === "GET") {
+      return jsonResponse({ error: { message: "not found" } }, 404);
+    }
+    if (url.pathname === CONNECTOR_COLLECTION_PATH && method === "PUT") {
+      putCalls += 1;
+      const request = body as { manifest: Record<string, unknown> };
+      return jsonResponse(configuredConnector(request.manifest));
+    }
+    if (url.pathname.endsWith("/settings/mcp-servers/exitramp/tools")) {
+      return jsonResponse({ data: REQUIRED_EXITRAMP_TOOLS.map((name) => ({ name })) });
+    }
+    if (url.pathname === "/api/v1/agents" && method === "GET") {
+      return jsonResponse({ data: [] });
+    }
+    if (url.pathname === "/api/v1/agents" && method === "POST") {
+      const request = body as { name: string; manifest: unknown };
+      return jsonResponse({
+        data: { id: "agent-first-run", name: request.name, manifest: request.manifest },
+      }, 201);
+    }
+    return jsonResponse({ error: "unexpected request" }, 500);
+  };
+
+  const result = await registerExitRampAgent({ fetchImpl });
+
+  assert.equal(result.action, "created");
+  assert.equal(putCalls, 2);
+  assert.deepEqual(calls[1]?.body, { manifest: EXITRAMP_MCP_MANIFEST });
+  assert.deepEqual(calls[2]?.body, {
+    manifest: {
+      ...EXITRAMP_MCP_MANIFEST,
+      provider_credentials: EXITRAMP_PROVIDER_CREDENTIAL_BINDINGS,
+    },
+  });
 });
 
 test("registration refuses to bind credentials to a different connector", async () => {
