@@ -3,6 +3,8 @@ set -euo pipefail
 
 NODE_VERSION="22.13.0"
 PNPM_VERSION="11.19.0"
+PNPM_SHA224="e2c0ae209c6e56fb502d0a596818c9b298e1bf39f2be3002c5709351"
+PNPM_DESCRIPTOR="pnpm@${PNPM_VERSION}+sha224.${PNPM_SHA224}"
 NODE_ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
 NODE_ARCHIVE_SHA256="3ff0d57063c33313d73d0bdcebc4c778ad6be948234584694a042c6fe57164f6"
 
@@ -39,7 +41,7 @@ if [[ "$(node --version)" != "v${NODE_VERSION}" ]]; then
 fi
 
 corepack enable --install-directory "${NODE_ROOT}/bin" pnpm >/dev/null
-corepack install --global "pnpm@${PNPM_VERSION}" >/dev/null
+corepack install --global "$PNPM_DESCRIPTOR" >/dev/null
 if [[ "$(pnpm --version)" != "$PNPM_VERSION" ]]; then
   echo "Pinned pnpm bootstrap failed." >&2
   exit 2

@@ -28,7 +28,7 @@ const AgentManifestSchema = z.object({
     enable_tools: z.array(z.string()),
     require_approval_for_tools: z.array(z.string()),
     preload: z.boolean(),
-  }).passthrough()).min(1),
+  }).passthrough()).length(1),
   config: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 
@@ -78,9 +78,9 @@ function defaultManifestPath(): string {
 }
 
 function assertExactToolPolicy(manifest: AgentManifest): void {
-  const binding = manifest.mcp_servers.find(({ name }) => name === EXITRAMP_MCP_NAME);
-  if (binding === undefined) {
-    throw new Error(`Agent manifest must bind the ${EXITRAMP_MCP_NAME} MCP server.`);
+  const binding = manifest.mcp_servers[0];
+  if (binding === undefined || binding.name !== EXITRAMP_MCP_NAME) {
+    throw new Error(`Agent manifest must bind only the ${EXITRAMP_MCP_NAME} MCP server.`);
   }
 
   const enabled = new Set(binding.enable_tools);

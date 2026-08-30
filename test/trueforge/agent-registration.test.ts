@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -29,6 +32,25 @@ test("checked-in agent binds the exact ExitRamp workflow and native paid-tool ga
   assert.match(manifest.instructions, /Never ask for approval in prose/);
   assert.match(manifest.instructions, /never treat a chat reply as authorization/);
   assert.ok(manifest.instructions.startsWith(MANAGED_AGENT_MARKER));
+});
+
+test("agent manifest rejects every additional or duplicate MCP binding", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "exitramp-agent-manifest-"));
+  try {
+    const manifest = await loadAgentManifest();
+    const manifestPath = join(directory, "agent.json");
+    await writeFile(manifestPath, JSON.stringify({
+      ...manifest,
+      mcp_servers: [
+        ...manifest.mcp_servers,
+        { ...manifest.mcp_servers[0]!, name: "unreviewed-server" },
+      ],
+    }));
+
+    await assert.rejects(loadAgentManifest(manifestPath));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("registration discovers the connector before creating the named agent", async () => {

@@ -8,7 +8,7 @@
   "engines": {
     "node": ">=22.13.0"
   },
-  "packageManager": "pnpm@11.19.0",
+  "packageManager": "pnpm@11.19.0+sha224.e2c0ae209c6e56fb502d0a596818c9b298e1bf39f2be3002c5709351",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "demo:approval": "tsx src/demo/approval.ts",

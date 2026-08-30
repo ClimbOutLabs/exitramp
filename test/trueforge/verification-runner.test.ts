@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -72,4 +73,16 @@ test("sandbox identifier is bounded and derived from the executor hostname", () 
   const identifier = sandboxIdentifier("sandbox.example.internal");
   assert.match(identifier, /^trueforge-sandbox:sandbox\.example\.internal:[a-f0-9]{12}$/);
   assert.ok(identifier.length <= 200);
+});
+
+test("sandbox bootstrap pins pnpm by both version and content hash", async () => {
+  const descriptor = "pnpm@11.19.0+sha224.e2c0ae209c6e56fb502d0a596818c9b298e1bf39f2be3002c5709351";
+  const packageJson = JSON.parse(await readFile("package.json", "utf8")) as {
+    packageManager?: string;
+  };
+  const bootstrap = await readFile("scripts/trueforge-verify.sh", "utf8");
+
+  assert.equal(packageJson.packageManager, descriptor);
+  assert.match(bootstrap, /PNPM_SHA224="e2c0ae209c6e56fb502d0a596818c9b298e1bf39f2be3002c5709351"/);
+  assert.match(bootstrap, /corepack install --global "\$PNPM_DESCRIPTOR"/);
 });
